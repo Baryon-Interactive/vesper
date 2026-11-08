@@ -92,11 +92,26 @@ impl GitHubPublisher {
     }
 
     pub fn ensure_release(&self, owner: &str, repo: &str, tag: &str) -> Result<Release> {
+        self.ensure_release_with(owner, repo, tag, true)
+    }
+
+    /// Mutable metadata releases pass `latest = false` so the repository's
+    /// "Latest" release keeps pointing at a game build.
+    fn ensure_release_with(
+        &self,
+        owner: &str,
+        repo: &str,
+        tag: &str,
+        latest: bool,
+    ) -> Result<Release> {
         if let Some(release) = self.get_release(owner, repo, tag)? {
             return Ok(release);
         }
         let url = format!("{}/repos/{}/{}/releases", self.api_base, owner, repo);
-        let body = serde_json::json!({ "tag_name": tag, "name": tag, "draft": false, "prerelease": false });
+        let mut body = serde_json::json!({ "tag_name": tag, "name": tag, "draft": false, "prerelease": false });
+        if !latest {
+            body["make_latest"] = serde_json::json!("false");
+        }
         let response = self.request(|| {
             Ok(self
                 .request_builder(self.client.post(&url))
@@ -142,7 +157,7 @@ impl GitHubPublisher {
         for name in files {
             anyhow::ensure!(dir.join(name).is_file(), "missing metadata file {name}");
         }
-        let release = self.ensure_release(owner, repo, tag)?;
+        let release = self.ensure_release_with(owner, repo, tag, false)?;
         let assets = self.list_assets(&release)?;
         for name in files {
             for asset in assets.iter().filter(|asset| asset.name == name) {

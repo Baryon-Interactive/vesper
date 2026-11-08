@@ -261,9 +261,30 @@ fn publish_self_hosted_creates_and_replaces_metadata_release_assets() {
         &server.base,
     ];
     let first = vesper(&args);
-    assert!(String::from_utf8_lossy(&first.stdout)
+    let stdout = String::from_utf8_lossy(&first.stdout).into_owned();
+    assert!(stdout
         .contains("metadata_url=https://github.com/owner/repo/releases/download/vesper-metadata/"));
+    assert!(stdout.contains("targets_version=1"), "{stdout}");
+    assert!(!stdout.contains("commit this checkout"), "{stdout}");
     assert_success(first);
+    {
+        let remote = server.remote.lock().unwrap();
+        let created: Vec<serde_json::Value> = remote
+            .requests
+            .iter()
+            .filter(|(method, path, _)| method == "POST" && path.ends_with("/releases"))
+            .map(|(_, _, body)| serde_json::from_slice(body).unwrap())
+            .collect();
+        assert_eq!(created.len(), 2);
+        for release in created {
+            // Only the mutable metadata release opts out of becoming "Latest".
+            let metadata = release["tag_name"] == "vesper-metadata";
+            assert_eq!(release.get("make_latest").is_some(), metadata, "{release}");
+            if metadata {
+                assert_eq!(release["make_latest"], "false");
+            }
+        }
+    }
     let old = server.remote.lock().unwrap().metadata_assets.clone();
     assert_eq!(old.len(), 3);
     fs::write(metadata.join("description.md"), b"Second description").unwrap();

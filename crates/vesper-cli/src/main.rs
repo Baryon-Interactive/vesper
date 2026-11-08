@@ -1114,7 +1114,7 @@ fn publish_local(
             let dir = remote
                 .metadata_dir
                 .unwrap_or_else(|| std::path::Path::new("metadata"));
-            write_publish_metadata(
+            let version = write_publish_metadata(
                 dir,
                 channel,
                 tag,
@@ -1123,6 +1123,11 @@ fn publish_local(
                 Some((owner, repo)),
             )?;
             publisher.publish_metadata(owner, repo, remote.metadata_tag, dir)?;
+            println!(
+                "metadata_release={} targets_version={version} (keep {} for the next publication)",
+                remote.metadata_tag,
+                dir.display()
+            );
             println!(
                 "metadata_url=https://github.com/{owner}/{repo}/releases/download/{}/",
                 remote.metadata_tag
@@ -1168,9 +1173,15 @@ fn write_publish_index(
     github: Option<(&str, &str)>,
 ) -> Result<()> {
     let app_dir = index.join("apps").join(&manifest.app_id);
-    write_publish_metadata(&app_dir, channel, tag, manifest_path, manifest, github)
+    write_publish_metadata(&app_dir, channel, tag, manifest_path, manifest, github)?;
+    println!(
+        "updated {} (upload packs with GitHub publisher, then commit this checkout)",
+        app_dir.join("targets.json").display()
+    );
+    Ok(())
 }
 
+/// Signs the next targets version in `app_dir` and returns that version.
 fn write_publish_metadata(
     app_dir: &std::path::Path,
     channel: &str,
@@ -1178,7 +1189,7 @@ fn write_publish_metadata(
     manifest_path: &std::path::Path,
     manifest: &Manifest,
     github: Option<(&str, &str)>,
-) -> Result<()> {
+) -> Result<u64> {
     fs::create_dir_all(app_dir)?;
     let targets_path = app_dir.join("targets.json");
     let metadata = vesper_meta::store_metadata(app_dir)?;
@@ -1239,13 +1250,10 @@ fn write_publish_metadata(
         },
     );
     targets.metadata = metadata;
+    let version = targets.version;
     let signed = vesper_meta::sign(targets, &[&key])?;
     write_json(&targets_path, &signed)?;
-    println!(
-        "updated {} (upload packs with GitHub publisher, then commit this checkout)",
-        targets_path.display()
-    );
-    Ok(())
+    Ok(version)
 }
 
 fn promote_channel(from: &str, to: &str, index: &std::path::Path) -> Result<()> {

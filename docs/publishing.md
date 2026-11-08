@@ -48,11 +48,11 @@ vesper publish ./dist-v1 --owner example --repo game-builds --tag v1.0.0 --metad
 The publisher uploads the build manifest and packs to the immutable build
 release, checks remote assets, increments the local targets version, binds the
 exact store/description lengths and SHA-256 hashes, and signs with the developer
-key. It creates the `vesper-metadata` Release if absent and replaces its three
-metadata assets: `targets.json`, `store.json`, `description.md`. Targets upload
-last; a reader seeing mixed generations rejects the store binding and retains
-valid data. The printed `metadata_url` is the location clients and aggregation
-read. `--metadata-dir` defaults to `./metadata`; `--metadata-tag` overrides the
+key. It creates the `vesper-metadata` Release if absent, without marking it as
+the repository's latest release, and replaces its three metadata assets:
+`targets.json`, `store.json`, `description.md`. Targets upload last; a reader
+seeing mixed generations rejects the store binding and retains valid data. The
+printed `metadata_url` is the location clients and aggregation read. `--metadata-dir` defaults to `./metadata`; `--metadata-tag` overrides the
 metadata Release tag and must match the registered route. Build and metadata
 tags must differ. `--dry-run` performs no upload or metadata write.
 
