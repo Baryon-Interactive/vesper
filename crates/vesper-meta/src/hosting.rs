@@ -46,7 +46,7 @@ pub fn fetch_file(base: &str, name: &str) -> Result<Vec<u8>> {
     // Only a loopback-origin mock may redirect to loopback HTTP. Production
     // requests cannot downgrade to HTTP, including a loopback destination.
     let local = base.scheme() == "http";
-    let client = Client::builder()
+    let mut builder = Client::builder()
         .timeout(Duration::from_secs(15))
         .connect_timeout(Duration::from_secs(5))
         .redirect(Policy::custom(move |attempt| {
@@ -55,8 +55,11 @@ pub fn fetch_file(base: &str, name: &str) -> Result<Vec<u8>> {
             } else {
                 attempt.follow()
             }
-        }))
-        .build()?;
+        }));
+    if local {
+        builder = builder.no_proxy();
+    }
+    let client = builder.build()?;
     let response = client.get(base.join(name)?).send()?.error_for_status()?;
     anyhow::ensure!(
         response.content_length().is_none_or(|n| n <= MAX_FILE_SIZE),
@@ -111,7 +114,27 @@ impl Bundle {
         for (name, bytes) in FILES[1..].iter().zip(&self.files[1..]) {
             crate::verify_store_bytes(&self.targets.signed, name, bytes)?;
         }
-        serde_json::from_slice::<serde_json::Value>(&self.files[1]).context("parse store.json")?;
+        let store: serde_json::Value =
+            serde_json::from_slice(&self.files[1]).context("parse store.json")?;
+        anyhow::ensure!(store.is_object(), "store.json must be an object");
+        if let Some(tags) = store.get("tags") {
+            anyhow::ensure!(
+                tags.as_array().is_some_and(|tags| tags.iter().all(|tag| {
+                    tag.as_str().is_some_and(|tag| {
+                        !tag.is_empty()
+                            && tag.len() <= 32
+                            && tag
+                                .bytes()
+                                .next()
+                                .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                            && tag
+                                .bytes()
+                                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    })
+                })),
+                "invalid catalogue tags"
+            );
+        }
         std::str::from_utf8(&self.files[2]).context("description.md must be UTF-8")?;
         Ok(())
     }

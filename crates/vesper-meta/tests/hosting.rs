@@ -37,11 +37,15 @@ impl Mock {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
-                let mut request = [0; 8192];
-                let Ok(n) = stream.read(&mut request) else {
-                    continue;
-                };
-                let text = String::from_utf8_lossy(&request[..n]);
+                let mut request = Vec::new();
+                let mut buffer = [0; 8192];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => request.extend_from_slice(&buffer[..n]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
                 let path = text.split_whitespace().nth(1).unwrap_or("");
                 let (headers, bytes) = data
                     .lock()
@@ -178,6 +182,24 @@ fn aggregate_rejects_store_binding_mismatch() {
         mock.put("store.json", b"tampered".to_vec());
     })
     .contains("mismatch"));
+}
+
+#[test]
+fn aggregate_rejects_signed_unsafe_catalogue_tags() {
+    let error = rejected_mutation(|mock, key| {
+        let mut targets = publish(mock, key, 3);
+        let store = br#"{"tags":["../../outside"]}"#;
+        targets
+            .signed
+            .metadata
+            .insert("store.json".into(), store_file_description(store));
+        mock.put(
+            "targets.json",
+            canonical_bytes(&sign(targets.signed, &[key]).unwrap()).unwrap(),
+        );
+        mock.put("store.json", store.to_vec());
+    });
+    assert!(error.contains("invalid catalogue tags"), "{error}");
 }
 #[test]
 fn aggregate_rejects_version_rollback() {
