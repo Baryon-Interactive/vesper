@@ -17,7 +17,7 @@ static catalogue. See the [project overview](../README.md),
 | `vesper-client` | All client logic: verified catalogue, settings, library, tasks, installation orchestration, gateway, credentials, media, runtime rules and game launch |
 | [Launcher](../launcher/README.md) | Tauri command wrappers, event forwarding, window setup and automatic updater |
 | [Gateway](../gateway/README.md) | Paid-game authentication, grants and DepotKey delivery through Cloudflare Worker/D1 |
-| [Index template](../index-template/README.md) | App PR validation, trusted merge, online signing and static Pages API |
+| [Index template](../index-template/README.md) | Registration, developer metadata aggregation, app PR validation, online signing and Pages |
 
 The [agent skill](../skills/vesper-publish/SKILL.md) documents the publishing
 boundary. [Experiments](../experiments/README.md) measure patch sizes and transfer
@@ -60,9 +60,13 @@ manifests require the `windows-x64` platform identity.
    only new content needs new pack files. Identical inputs and parameters produce
    identical packs and manifests. `SOURCE_DATE_EPOCH` controls creation time.
 3. Publication uploads new packs and the manifest to a release and signs the
-   channel targets. A separate index PR carries metadata and store descriptions.
-4. Trusted Actions validate permitted paths, merge eligible single-app changes,
-   sign snapshot/timestamp metadata and deploy the signed revision to Pages.
+   channel targets, binding store and description files. These three files live
+   in the developer's metadata Release or HTTPS directory. A single registration
+   PR adds developer keys and `metadata_url` to routes.
+4. Central Actions aggregate every 15 minutes or on manual dispatch, checking
+   signatures, store bindings, expiry and monotonic versions per app. Rejected
+   apps retain their last valid data. Changes explicitly dispatch online signing
+   and Pages deployment. Apps without a metadata location use app PRs.
 5. Clients verify trust and manifest size/hash before fetching. Sources can be
    GitHub releases, Hugging Face or HTTP; templates use `{release}` and `{pack_id}`.
    Every chunk is verified after decoding. HTTP requires a matching `206`
@@ -102,6 +106,13 @@ Pinned root keys -> root.json -> routes.json -> developer keys -> targets.json
   verify the signed chain, and hash raw files copied by Pages before display.
   Derived API store fields do not authorize displayed content.
 
+Install/update checks prefer developer hosting using routes from central trust,
+validating signatures and both store bindings. Failures log their reason and
+fall back to the full central chain. `highest-targets.json` persists each app's
+highest accepted payload; neither path permits rollback or same-version changes.
+Catalogue browsing uses a separate central cache while aggregation catches up.
+Deleting a route delists the app and prevents further direct checks.
+
 A PR uses `--targets-only --previous` before online signing. Full published-index
 verification also checks the online chain. A configured production root rejects
 missing required online roles; an unpinned bootstrap index is a weaker trust mode.
@@ -118,7 +129,8 @@ temporary hex buffer and never returns keys to frontend IPC or progress events.
 Untrusted PR code never runs with merge or online signing secrets. The trusted
 merge workflow inspects the complete file list and exact head commit using
 scripts from the default branch. Only targets and their signed store/description
-files qualify for automatic merge; online-role files require a maintainer.
+files for routes without `metadata_url` qualify for automatic merge; hosted app
+and online-role changes require a maintainer.
 PR verification rejects store changes without matching developer signatures.
 Signing retries regenerate metadata on current
 main rather than rebasing signed output; Pages deploys the resulting commit.
@@ -134,7 +146,8 @@ Production operation requires trusted root distribution, provider
 credentials, a mail adapter, payment configuration and gateway rate limiting.
 Local tests do not establish deployed OAuth, payments, Pages or WAN performance.
 
-The desktop WebView uses a self-only default CSP and scripts, no eval, HTTPS
-images plus Tauri asset origins and the loopback demo cover server. Inline styles
+The desktop WebView uses a self-only default CSP and scripts, no eval, and
+`img-src 'self' blob:`. The client returns verified image bytes over IPC; the UI
+creates and revokes blob URLs instead of fetching external images. Inline styles
 support React's computed progress widths; scripts do not permit unsafe-inline.
 The native tour reuses the tracked application icon as a hash-verified cover.

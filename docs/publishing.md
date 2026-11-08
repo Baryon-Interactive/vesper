@@ -1,131 +1,139 @@
 # Publishing a game
 
-Publish immutable content to a release, then submit signed app metadata to a
-catalogue. See the [overview](../README.md), [CLI reference](cli.md) and
-[index template](../index-template/README.md). The examples use PowerShell and
-assume `vesper` and `gh` are on PATH.
+Developers host their signed metadata alongside their game releases. The central
+catalogue registers developer keys and hosting locations, aggregates verified
+metadata, and signs the online snapshot/timestamp chain. See the [CLI reference](cli.md),
+[index layout](index-layout.md) and [index template](../index-template/README.md).
+Commands assume PowerShell with `vesper` and authenticated `gh` on PATH.
 
-## Register the developer key
+## Register once
 
-Clone your chosen catalogue into `./index` and work on a contribution branch.
-From your game project, initialize its identity:
+Initialize your game identity from the game project:
 
 ```powershell
-vesper init --app-id com.example.game --index ./index
+vesper init --app-id com.example.game
 ```
 
-This writes `vesper.toml`, stores a developer seed in the system key store and
-prints the public key plus a registration command. It does not submit a PR or
-sign routes automatically. Ask the catalogue maintainer to register that public
-key under your app ID, collect the offline root threshold signatures, and merge
-the route-registration PR. Route changes always require maintainer handling.
-Never put the private key in that PR. CI may supply `VESPER_DEV_KEY` and
-`VESPER_APP_ID`; keep these in secrets, not command output or source control.
+This creates `vesper.toml`, stores the developer seed in the system key store and
+prints its public key. Supply that public key and a metadata base URL to the
+catalogue maintainer in a registration PR. A maintainer prepares the route:
 
-The generated configuration identifies the developer key; current packaging flags
-explicitly supply platform, version, input and user-file policy.
+```powershell
+vesper index route-add --index ./index --app com.example.game --pubkey <public-key> --metadata-url https://github.com/example/game-builds/releases/download/vesper-metadata/
+vesper index route-sign --index ./index --root-key-file <offline-root-key-file>
+```
 
-## Package the first build
+Collect the root threshold signatures and merge this single registration PR.
+The root-signed route authorizes the developer keys and metadata location.
+Subsequent releases require no app PR. Key/location changes require maintainer
+review and root signatures; deleting the route delists the app. Keep private
+keys out of the index. CI uses secret `VESPER_DEV_KEY` and `VESPER_APP_ID`.
+
+## Prepare metadata and the first build
+
+Create `./metadata/store.json` following the [store schema](../index-template/schemas/store.schema.json)
+and `./metadata/description.md` as UTF-8 Markdown. Media records contain HTTPS
+URLs, BLAKE3 hashes and dimensions; host actual media in your own repository or
+release. The launcher displays the exact image bytes verified by the client.
+Preserve the metadata directory, including its signed targets version history,
+between publications. Keep it in your own game repository or durable CI storage.
 
 ```powershell
 vesper check ./build --json
 vesper pack --input ./build --output ./dist-v1 --app-id com.example.game --platform windows-x64 --version 1.0.0 --release-tag v1.0.0 --user-file 'Saved/**'
 vesper inspect --manifest ./dist-v1/manifest.cbor.zst
+vesper publish ./dist-v1 --owner example --repo game-builds --tag v1.0.0 --metadata-dir ./metadata --channel stable
 ```
 
-Keep `dist-v1/manifest.cbor.zst` for future updates. Exclude credentials and
-unintended local files from the input. User-file globs mark files the installer
-must preserve. Set `SOURCE_DATE_EPOCH` consistently if you need a nonzero
-reproducible creation timestamp.
+The publisher uploads the build manifest and packs to the immutable build
+release, checks remote assets, increments the local targets version, binds the
+exact store/description lengths and SHA-256 hashes, and signs with the developer
+key. It creates the `vesper-metadata` Release if absent and replaces its three
+metadata assets: `targets.json`, `store.json`, `description.md`. Targets upload
+last; a reader seeing mixed generations rejects the store binding and retains
+valid data. The printed `metadata_url` is the location clients and aggregation
+read. `--metadata-dir` defaults to `./metadata`; `--metadata-tag` overrides the
+metadata Release tag and must match the registered route. Build and metadata
+tags must differ. `--dry-run` performs no upload or metadata write.
 
-## Publish assets and signed targets
+Use `GITHUB_TOKEN` or authenticated `gh` with permission to upload to your own
+repository. Assets must be anonymously readable by clients. The CLI does not
+create a repository, register routes, submit PRs or dispatch catalogue workflows.
+For custom HTTPS hosting, copy the same three local metadata files to the
+registered base directory. No Pages setup is needed for Release hosting.
 
-Create or select a developer-controlled release repository and authenticate `gh`
-or provide `GITHUB_TOKEN` with the necessary repository permissions. After route
-registration has merged, update the index checkout. Create `store.json` and
-`description.md` in `apps/com.example.game/` before publishing, then run:
+## Aggregation and client updates
 
-```powershell
-vesper publish ./dist-v1 --owner example --repo game-builds --tag v1.0.0 --index ./index --channel stable
-```
+The central `aggregate.yml` workflow runs every 15 minutes and supports manual
+Actions dispatch. Scheduling and hosting caches can delay visibility. A
+maintainer can run `vesper index aggregate --index ./index` locally or trigger
+that workflow. It reports `updated`, `unchanged` or `rejected: <reason>` per app
+and writes the same report to the Actions summary. Signature, expiry, store
+binding, transport and version checks run in the CLI. One failed app keeps its
+last valid data while other apps proceed. Lower targets versions and different
+content at the same version are rejected.
 
-This uploads the manifest and packs, verifies remote assets and writes signed
-`apps/com.example.game/targets.json` in the local index. Supplying `--index` is
-required for high-level publication; omitting it only prints a dry-run report.
-The generated source URL includes the release repository. The CLI does not
-create a GitHub PR. Publication needs a public/readable content source for
-clients; signatures do not make private assets anonymously accessible.
+Changed aggregation commits explicitly dispatch central snapshot signing and
+Pages deployment. Only the centre holds the online key. For first publication,
+a full index Git history allows the signer to initialize a registered hosted
+app; deleted online documents recover their highest historical versions.
+The binary checksum pins and online key must be configured before deployment;
+the template's zero checksum placeholder fails closed at execution time.
 
-For paid content, packaging accepts `--depot-key-hex` and `--key-id`, but the
-high-level `publish` reader does not decrypt manifests. Use `publish-github`
-with decryption flags plus an app-target signing integration, and provision the
-DepotKey and grants through the [gateway](../gateway/README.md). The local
-[demo tooling](../launcher/README.md#local-demonstration) contains an encrypted
-example; it is not a production payment configuration.
+Catalogue browsing reads central Pages and verifies its full signed chain.
+Update/install checks can read the developer location using keys from the
+central signed route and verify both store files. Invalid or unavailable direct
+data logs a rejection and falls back to the central signed chain. Clients
+persist the highest accepted targets payload/version per app; neither path can
+lower it or substitute different content at the same version. An older central
+catalogue remains browsable while aggregation catches up, but cannot authorize
+an update below that high-water mark.
 
-## Submit the catalogue PR
-
-Review `store.json` and `description.md` in the same app directory, following
-[the index layout](index-layout.md) and store schema. Store media uses HTTPS
-URLs, BLAKE3 hashes and dimensions; upload actual images to your own hosting.
-Only app metadata belongs in the index, not game packs or private keys.
-Targets sign both files through required `metadata` length/SHA-256 entries. After
-editing either file, advance the targets version and run
-`vesper sign --targets ./index/apps/com.example.game/targets.json`. Both full and
-`--targets-only` verification reject an unmatched file. Initial online signing
-requires explicit maintainer `--initialize`; see [version recovery](index-layout.md#online-version-recovery).
-
-```powershell
-git -C ./index switch -c game-1.0.0
-git -C ./index add apps/com.example.game
-git -C ./index commit -m 'Publish game 1.0.0'
-git -C ./index push -u origin game-1.0.0
-Push-Location ./index
-try {
-  gh pr create --repo catalogue-owner/catalogue --base main --head developer:game-1.0.0 --title 'Publish game 1.0.0' --body 'Add signed game metadata and store details.'
-} finally { Pop-Location }
-```
-
-Replace the repository and head owner with the catalogue and your contribution fork.
-
-Untrusted PR checks validate developer signatures with `--targets-only` against
-the base index. A trusted default-branch workflow independently checks the
-complete changed-file list and exact PR head before automatic merging.
-Automatic merge permits only `store.json`, `description.md`, `targets.json`,
-under one app directory. Snapshot/timestamp, root/routes,
-workflows, scripts, schemas, multiple apps and other paths require a maintainer.
-Online roles are generated by trusted maintainer signing, never by contributor PRs.
-
-After merge, trusted Actions sign snapshot/timestamp, run full verification and
-deploy the signed commit to Pages. The CLI binary pins and online key must be
-configured first; the template's checksum placeholder fails closed. A merged PR
-alone does not mean the new release is already deployed.
-
-## Publish an update with pack reuse
+## Publish updates and redeploy retained builds
 
 ```powershell
 vesper pack --input ./build-v2 --output ./dist-v2 --app-id com.example.game --platform windows-x64 --version 1.1.0 --release-tag v1.1.0 --previous ./dist-v1/manifest.cbor.zst --user-file 'Saved/**'
 vesper diff-check --current ./dist-v2/manifest.cbor.zst --against ./dist-v1/manifest.cbor.zst --json
-vesper publish ./dist-v2 --owner example --repo game-builds --tag v1.1.0 --index ./index --channel beta
+vesper publish ./dist-v2 --owner example --repo game-builds --tag v1.1.0 --metadata-dir ./metadata --channel stable
 ```
 
-Submit another app PR. Keep earlier release assets: unchanged chunks point
-to packs in their original releases, including on fresh installs. Do not copy
-all reused packs into the new release or delete older releases referenced by
-retained manifests. Repeat `--previous` to supply more than one prior manifest.
+Keep previous manifests and release packs: unchanged chunks refer to their
+original releases, including for fresh installs. Repeat `--previous` for more
+than one retained manifest. To return a channel to an earlier game build,
+publish the retained packed directory again with its original build tag:
 
-`vesper promote beta stable --index ./index` copies a beta entry to
-stable, but currently requires the local index to contain exactly one app's
-targets. It fails on a multi-app catalogue. Submit the resulting targets change
-and let trusted Actions renew the online chain.
+```powershell
+vesper publish ./dist-v1 --owner example --repo game-builds --tag v1.0.0 --metadata-dir ./metadata --channel stable
+```
 
-The CLI's channel `rollback` only decrements a metadata version; it does not
-select an older game manifest. To redeploy an earlier game build, publish the
-retained packed directory with its original tag and submit the new signed targets:
+The metadata version increases even when the game build version decreases.
+Installer rollback (`vesper install-rollback --target ./library/game`) restores
+a local backup independently of published metadata. The channel `rollback`
+command only decrements the channel metadata version; it does not choose an
+older manifest. `promote` and channel `rollback` operate on a single-app index.
+
+For paid builds, `pack` accepts `--depot-key-hex` and `--key-id`; high-level
+`publish` reads unencrypted manifests. Encrypted publication uses
+`publish-github` with decryption flags plus app-target signing integration and
+[gateway provisioning](../gateway/README.md). See the local
+[encrypted demonstration](../launcher/README.md#local-demonstration).
+
+## Repository-hosted metadata alternative
+
+Omit `metadata_url` from the signed route to manage metadata inside the central
+index. Create `apps/com.example.game/store.json` and `description.md`, then:
 
 ```powershell
 vesper publish ./dist-v1 --owner example --repo game-builds --tag v1.0.0 --index ./index --channel stable
 ```
 
-Installer rollback is separate: `vesper install-rollback --target ./library/game`
-restores the local installation backup. It does not modify catalogue metadata.
+Review and commit only that app's `store.json`, `description.md` and signed
+`targets.json`, and submit an index PR. Store edits require a higher targets
+version and a fresh signature. `vesper sign --targets <path>` recomputes store
+bindings. Eligible single-app PRs auto-merge after trusted default-branch path
+and exact-head checks. Snapshot/timestamp files, routes, multiple apps and other
+paths require maintainer handling. New repository-hosted apps require explicit
+maintainer online initialization; see [version recovery](index-layout.md#online-version-recovery).
+A route with `metadata_url` requires maintainer handling for any app PR, so the
+PR and aggregation paths cannot compete. The `maintainer-approved` label enables
+PR verification feedback for such changes; it never permits automatic merging.

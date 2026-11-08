@@ -15,8 +15,8 @@ has no open-source license assigned.
 Developer: vesper pack -> vesper publish
                            | release assets + signed targets
                            v
-                      Index repository PR
-                           | Actions validate and merge eligible app changes
+                      Developer metadata Release
+                           | Central aggregation verifies registered keys and store bindings
                            v
                       Sign snapshot/timestamp -> deploy Pages
                            |
@@ -94,8 +94,10 @@ See [launcher setup and demo instructions](launcher/README.md).
 ## Publishing a game
 
 Initialize a developer identity, pack a build, and publish release assets plus
-signed targets into a local index checkout. Submit that checkout's app changes
-as a PR to the catalogue. Updates can reuse packs from earlier releases.
+signed targets into your own metadata Release. A single registration PR adds
+your public key and `metadata_url` to the central registry. Aggregation runs
+every 15 minutes; subsequent releases need no app PR. Repository-hosted metadata
+is also supported. Updates can reuse packs from earlier releases.
 Follow [the publishing guide](docs/publishing.md), including key registration.
 
 ## Running your own catalogue

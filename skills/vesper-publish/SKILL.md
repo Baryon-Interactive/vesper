@@ -16,7 +16,7 @@ and [publishing guide](../../docs/publishing.md).
 - `vesper check ./Build --json` inspects an unpacked build for size and path issues.
 - `vesper pack --input ./Build --output ./dist --app-id <id> --platform windows-x64 --version <version>` creates packs and a manifest. Add `--previous <manifest>` for updates and repeat `--user-file` for preserved files.
 - `vesper diff-check --current ./dist/manifest.cbor.zst --against ./previous/manifest.cbor.zst --json` compares packed manifests.
-- `vesper publish ./dist --owner <owner> --repo <repo> --tag <tag> --index ./index --channel beta` uploads prepared content and signs local targets. The developer separately submits the index PR.
+- `vesper publish ./dist --owner <owner> --repo <repo> --tag <tag> --metadata-dir ./metadata --channel stable` uploads immutable build assets and replaces developer-signed metadata in the `vesper-metadata` Release. Preserve the local metadata directory and increasing targets history. Register its printed `metadata_url` once through a root-signed route PR. `--metadata-tag` selects a matching custom Release tag; arbitrary HTTPS hosting can serve the same three files.
 - `vesper promote beta stable --index ./index` copies a channel entry without uploading again; requires a single-app index.
 - `vesper rollback stable --index ./index` only decrements a channel metadata version, not its manifest; redeploy retained packs to select an earlier build.
 - `vesper gc --index <scratch>` reports local packs; its empty retention set makes `--yes` unsuitable for production retention.
@@ -35,8 +35,9 @@ For a large Unreal build, interpret a file over the configured threshold (initia
 Install a reviewed binary using the [release guide](../../docs/releases.md).
 Supply `VESPER_DEV_KEY`, `VESPER_APP_ID` and upload credentials through CI secrets.
 Pack the input first, then publish the packed directory with explicit owner,
-repository, tag and local index arguments. Submit the signed app changes to the
-catalogue separately; do not claim the CLI creates or merges a PR.
+repository, tag and local metadata directory arguments. The central aggregator
+runs every 15 minutes or on manual workflow dispatch. No app PR is needed for
+hosted updates. The CLI does not create registration PRs or dispatch workflows.
 
 The developer key belongs in a repository secret or system key store; never
 print it. `gh` credentials may be used for release uploads. Remote pack headers
@@ -47,11 +48,21 @@ Preserve immutable content-addressed packs, original release references and the
 `{release}`/`{pack_id}` source-template variables. Do not silently reconfigure the
 engine or create public repositories.
 
-Before publication, create both `apps/<id>/store.json` and `description.md`.
-Targets require `metadata` entries binding their raw lengths and SHA-256 hashes;
-publication and application `sign` recompute them automatically. Advance targets
-versions and re-sign after store edits. Submit only store, description and targets
-in an app PR. Snapshot/timestamp files always require maintainer handling.
-Maintain online version history; automated signing fails on missing history.
-Only a maintainer may explicitly `--initialize` a genuinely new app. Clients
-verify raw store bytes against the developer-signed targets before display.
+Before publication, create `store.json` and `description.md` in `--metadata-dir`
+(default `./metadata`). Targets bind their raw lengths and SHA-256 hashes;
+publication and application `sign` recompute those bindings. The developer
+hosting directory contains exactly these two files and `targets.json`. Only the
+central service signs snapshot/timestamp with its online key. Aggregation rejects
+invalid signatures, mismatched store bytes, rollback and same-version content
+changes, retaining each failed app independently. Clients obtain routes from
+central trust, prefer verified developer metadata for updates and log fallback
+to the central chain. Neither source may lower the locally seen targets version.
+
+For repository hosting, omit `metadata_url` from the route, create both store
+files under `apps/<id>/`, and pass `--index ./index` to publish. Submit only its
+three developer files in an app PR. Hosted routes never qualify for automatic
+app-PR merging. Online files require maintainer handling; version recovery uses
+full Git history. Registered hosted apps initialize online roles on first
+aggregation with full history; new repository-hosted apps require maintainer
+`--initialize`. Re-publishing a retained earlier build selects it with a higher
+targets version; do not decrement signed targets to roll back game content.

@@ -64,35 +64,39 @@ signature chain for you. Dry-run fields include `changed_bytes`, `download_bytes
 
 | Command | Purpose and key arguments |
 | --- | --- |
-| `publish` | Read a packed directory or manifest; `--index`, `--channel`, `--owner`, `--repo`, `--tag`; `--dry-run` previews without publication |
+| `publish` | Read a packed directory or manifest; `--owner`, `--repo`, `--tag`, `--channel`; `--metadata-dir` (default `./metadata`) and `--metadata-tag` (default `vesper-metadata`) for self-hosting, or `--index` for repository hosting; `--dry-run` previews |
 | `publish-github` | Lower-level upload with `--owner`, `--repo`, `--tag`, `--manifest`, `--packs-dir`; optional `--index` and `--channel` |
 | `promote` | Copy a channel entry: positional source/destination channels and `--index` |
 | `rollback` | Decrement the channel metadata version: positional channel and `--index`; does not select a previous manifest |
 | `sign` | Re-sign application targets (recomputes store hashes) or flat targets with `--targets` and optional `--key-file` |
 | `gc` | Report packs in `<index>/packs`; `--index` required, `--yes` deletes reported packs |
 
-`publish` needs `--index` to perform publication; without it, or with `--dry-run`,
-it only reports. Supply both owner and repo for GitHub upload; omit both for a
-local index-only write. `GITHUB_TOKEN` or authenticated `gh` supplies upload
-credentials. Endpoint overrides `--api-base` and `--upload-base` support mocks.
-Index signing uses the developer key selected by `VESPER_APP_ID` or the current
-`vesper.toml`, with `VESPER_DEV_KEY` available for CI.
+`publish` with owner/repo and no `--index` uploads build assets and the three
+signed developer metadata files to a separate mutable Release. Preserve
+`--metadata-dir` and its increasing targets versions between publications;
+`store.json` and `description.md` must exist there. The metadata tag must differ
+from the build tag. It prints the public `metadata_url` base to register.
+`--metadata-dir` conflicts with `--index`. With `--index`, the publisher writes
+`apps/<id>/targets.json` for an app PR; omit owner/repo for local-only signing.
+With neither an index nor owner/repo, publication only reports a dry run.
+`GITHUB_TOKEN`, explicit `--token`, or authenticated `gh` supplies upload credentials.
+`--api-base` and `--upload-base` override GitHub endpoints for local mocks.
+Signing selects `VESPER_APP_ID` or `vesper.toml`; `VESPER_DEV_KEY` supplies a CI key.
 
 ```powershell
+vesper publish ./dist-v2 --owner example --repo game-builds --tag v1.1.0 --metadata-dir ./metadata --channel stable
+vesper publish ./dist-v1 --owner example --repo game-builds --tag v1.0.0 --metadata-dir ./metadata --channel stable
 vesper publish ./dist-v2 --owner example --repo game-builds --tag v1.1.0 --index ./index --channel beta
 vesper promote beta stable --index ./index
-vesper rollback stable --index ./index
-vesper publish-github --owner example --repo game-builds --tag v1.0.0 --manifest ./dist-v1/manifest.cbor.zst --packs-dir ./dist-v1/packs
 ```
 
-An explicit tag is required if reused pack tags do not include the manifest
-version. Ambiguity fails before network calls. Missing local reused packs are
-checked on the remote release. Publication writes local targets; it does not
-create an index PR. Channel promotion and rollback need online metadata renewal.
-Both currently require an index containing exactly one application's targets.
-`rollback` only decrements that channel entry's metadata version; it does not
-restore an older game manifest. To redeploy an earlier build, publish its retained
-packed directory again with its original release tag and submit the new targets.
+An explicit build tag is required if pack tags exclude the manifest version.
+Ambiguous tags fail before network calls. Missing local reused packs are checked
+on their remote release. Redeploying an older build with its retained tag
+increments the targets version and binds that older manifest. `promote` and
+channel `rollback` require a single-app index and online metadata renewal;
+`rollback` only decrements channel metadata, not the selected game manifest.
+Publication does not create an index PR or trigger aggregation itself.
 `gc` currently passes an empty retained-manifest set: use it only on disposable
 pack directories, never as a production retention planner. It does not repack.
 
@@ -102,7 +106,8 @@ pack directories, never as a production retention planner. It does not repack.
 | --- | --- |
 | `online-pubkey` | Print the public key derived from `VESPER_ONLINE_KEY` |
 | `init` | `--index`, `--root-keys`, `--threshold`, `--out-keys`; `--online-pubkey` or `VESPER_ONLINE_KEY` establishes online trust |
-| `route-add` | Register `--app` and `--pubkey` in `--index`; requires offline signing next |
+| `route-add` | Register `--app`, `--pubkey` and optional `--metadata-url` in `--index`; requires offline signing next |
+| `aggregate` | Fetch developer bundles in `--index`; per-app `updated` / `unchanged` / `rejected: <reason>`, also in `GITHUB_STEP_SUMMARY`; rejected apps retain old files and do not fail other apps |
 | `route-sign` | Sign routes with `--root-key-file`; repeat the command with required root keys |
 | `verify` | Verify `--index`; repeat `--app`, use `--previous` for monotonic checks; `--targets-only` is for untrusted pre-signing PR feedback |
 | `pending-snapshots` | List apps with changed targets or snapshots within two days of expiry |
@@ -112,11 +117,19 @@ pack directories, never as a production retention planner. It does not repack.
 ```powershell
 vesper index online-pubkey
 vesper index init --index ./index --root-keys 3 --threshold 2 --out-keys ./root-keys --online-pubkey <hex-public-key>
+vesper index aggregate --index ./index
 vesper index verify --index ./index
 vesper index pending-snapshots --index ./index
 vesper index snapshot --index ./index --app demo
 vesper index timestamp --index ./index --all
 ```
+
+Aggregation verifies the root-signed registry before fetching. Each file is limited
+to 1 MiB, with a 15-second total and 5-second connect timeout and at most five
+redirects. HTTPS is required throughout; HTTP 127.0.0.1 is permitted for local
+mock origins only. Same-version different payloads and lower versions are rejected.
+A rejection is a per-app result; invalid registry trust or local report I/O fails
+the command. Workflows run aggregation every 15 minutes and on manual dispatch.
 
 Root keys are offline secrets; online signing keys belong only in trusted branch
 workflows. See [index layout](index-layout.md) for canonical metadata links.

@@ -20,9 +20,34 @@ regenerated without changing application targets.
 ```
 
 `routes.json` has a signed payload with `version`, `expires`, and
-`apps.<app_id> = { "keys": [<ed25519 public key hex>], "threshold": <n> }`.
+`apps.<app_id> = { "keys": [<ed25519 public key hex>], "threshold": <n>, "metadata_url": "https://github.com/example/game-builds/releases/download/vesper-metadata/" }`.
 The route keys are public keys; signatures identify them with their SHA-256
-key id.
+key id. Optional `metadata_url` selects developer hosting; omit it for app PRs.
+See the [routes schema](../index-template/schemas/routes.schema.json).
+Deleting a signed route delists the app even if its old files remain on disk.
+
+Developer hosting serves `targets.json`, `store.json` and `description.md` at
+the registered base. No developer snapshot/timestamp is needed. The default is
+GitHub Release tag `vesper-metadata`; arbitrary HTTPS bases are also supported.
+HTTP 127.0.0.1 is permitted for local mocks only. Bases contain no credentials,
+query or fragment. Each file is limited to 1 MiB, with a 15-second timeout,
+5-second connect timeout and at most five redirects. Production redirects
+require HTTPS; loopback HTTP mocks may also redirect to loopback HTTP.
+
+`vesper index aggregate --index <dir>` verifies root/routes, developer signatures,
+expiry and raw store bindings, then compares the prior aggregated targets.
+Lower versions and different signed payloads at the same version are rejected.
+Complete bundles are staged before replacing app directories, copying the three
+raw byte sequences and retaining central online roles for the signing pass.
+Rejection preserves an app independently of other apps. Results appear per app
+on stdout and in `GITHUB_STEP_SUMMARY`. The [directory layout schema](../index-template/schemas/metadata-layout.schema.json)
+defines the developer three-file set and central five-file set shown above.
+Snapshot/timestamp always use the central online key.
+
+`aggregate.yml` runs every 15 minutes or by manual dispatch and explicitly
+starts `snapshot.yml` after pushing changes. Signing calls reusable Pages with
+its resulting commit. Hosted app PRs require maintainer handling to prevent
+competing updates through the two publication paths.
 
 An application `targets.json` payload is:
 
@@ -88,14 +113,13 @@ missing online files for every app in the base, including with `--targets-only`.
 It also checks developer targets rollback for the selected apps.
 `index snapshot` and `index timestamp` take the maximum version in current files,
 optional `--previous <base>` files, and available full Git history before incrementing.
-Deleted files therefore retain their version history. Signing an app with no
-recoverable prior online version fails by default. For a genuinely new app a
-maintainer explicitly runs `index snapshot --index <index> --app <id> --initialize`.
-The automated signing workflow never passes `--initialize`; it fails if history
-is unavailable rather than guessing version 1. A shallow clone, rewritten history,
-or standalone directory cannot prove an app was never published: restore the
-full history or provide a trusted prior index using `--previous`. Initial online
-files require maintainer handling, as contributor PRs cannot modify them.
+Deleted files therefore retain their version history. Repository-hosted apps
+without history require explicit maintainer `index snapshot --initialize`.
+Registered hosted apps may initialize at first aggregation when the checkout has
+full Git history; the signer still takes the maximum historical version if
+online files were deleted. A shallow checkout cannot enable initialization.
+Restore full history or supply a trusted `--previous` index to recover versions.
+Automated workflows never pass `--initialize`. Developers do not hold online keys.
 
 ## Client catalogue verification
 
@@ -105,3 +129,18 @@ The client verifies the root/routes/developer/online chain, then fetches the raw
 store files and checks `metadata` length and SHA-256 before parsing and returning
 any store content. It ignores the API's derived store and description records.
 Any mismatch returns an explicit error and no catalogue data for that request.
+
+
+## Direct client update checks
+
+Install/update checks obtain routes only from the central signed registry and
+prefer the developer base when present. Developer signatures, expiry and both
+store bindings are required; developer online roles are unnecessary. Failures
+log the reason and fall back to the central chain. Accepted source and targets
+version are logged as `source=developer` or `source=central`.
+
+`metadata/<id>/highest-targets.json` persists the highest accepted payload.
+Checks compare that file and the central cache across restarts, rejecting lower
+versions and same-version equivocation. A central fallback below the high-water
+mark also fails. Catalogue browsing uses central trust and its separate monotonic
+chain cache, remaining available while aggregation catches up.

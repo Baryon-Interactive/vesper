@@ -15,7 +15,7 @@ Run on Windows with Docker Desktop in Linux container mode, Git, tar, Rust
 The development workspace uses the same compiler via [rust-toolchain.toml](../rust-toolchain.toml):
 
 ```powershell
-powershell -NoProfile -File scripts/build-vesper-release.ps1 -Version 0.4.0 -OutDir ./target/release-out
+powershell -NoProfile -File scripts/build-vesper-release.ps1 -Version 0.5.0 -OutDir ./target/release-out
 ```
 
 `-Version` must match the workspace version in the archived commit. The script
@@ -62,12 +62,12 @@ After review, the **maintainer** runs the following from the output directory
 against the already-created public binary repository:
 
 ```powershell
-gh release create vesper-v0.4.0 vesper-linux-x64 vesper-windows-x64.exe SHA256SUMS --repo EthanInMel/gsp-releases --title 'vesper 0.4.0' --notes 'Built from source commit <full-commit-sha>; see SHA256SUMS.'
+gh release create vesper-v0.5.0 vesper-linux-x64 vesper-windows-x64.exe SHA256SUMS --repo EthanInMel/gsp-releases --title 'vesper 0.5.0' --notes 'Built from source commit <full-commit-sha>; see SHA256SUMS.'
 ```
 
 Replace the version and commit with the reviewed build provenance. Do not
 upload source archives or source tokens. Then set workflow-level `VESPER_VERSION`
-and `VESPER_SHA256` in `verify-pr.yml`, `snapshot.yml`, and `timestamp.yml` to the
+and `VESPER_SHA256` in `verify-pr.yml`, `aggregate.yml`, `snapshot.yml`, and `timestamp.yml` to the
 same release version and **Linux binary** hash. Keep
 `VESPER_RELEASES_REPO: EthanInMel/gsp-releases`. Run the template tests, then test
 snapshot and timestamp Actions in the index repository and verify a PR changing
