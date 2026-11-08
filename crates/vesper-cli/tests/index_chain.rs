@@ -577,6 +577,8 @@ fn aggregate_isolates_failed_app_reports_summary_and_initializes_registered_host
                 std::thread::sleep(std::time::Duration::from_millis(2));
                 continue;
             };
+            // Accepted sockets inherit non-blocking mode on Windows.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(2)))
                 .unwrap();

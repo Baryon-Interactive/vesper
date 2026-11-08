@@ -34,6 +34,8 @@ impl Mock {
                     thread::sleep(Duration::from_millis(2));
                     continue;
                 };
+                // Accepted sockets inherit non-blocking mode on Windows.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
