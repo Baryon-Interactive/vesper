@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod hosting;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignatureEntry {
     pub keyid: String,
@@ -92,6 +94,8 @@ pub struct TimestampSigned {
 pub struct AppRoute {
     pub keys: Vec<String>,
     pub threshold: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -623,6 +627,13 @@ pub fn verify_metadata_description(
 }
 
 pub fn verify_routes(routes: &Signed<RoutesSigned>, root: &Signed<RootSigned>) -> Result<()> {
+    anyhow::ensure!(routes.signed.typ == "routes", "incorrect routes role type");
+    for (id, route) in &routes.signed.apps {
+        hosting::validate_app_id(id)?;
+        if let Some(url) = &route.metadata_url {
+            hosting::metadata_base(url)?;
+        }
+    }
     let role = root.signed.roles.get("root").context("root role missing")?;
     verify_role(routes, &root.signed.keys, role)?;
     validate_version_and_expiry(
@@ -742,6 +753,7 @@ mod tests {
         let route = AppRoute {
             keys: vec![key.public_hex()],
             threshold: 1,
+            metadata_url: None,
         };
         let payload = AppTargetsSigned {
             metadata: ["store.json", "description.md"]

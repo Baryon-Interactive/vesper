@@ -134,6 +134,30 @@ impl GitHubPublisher {
         Ok(response.error_for_status()?.json()?)
     }
 
+    /// Replace the mutable developer metadata assets, publishing targets last.
+    /// Readers can observe a mixed generation while uploads run; signed store
+    /// bindings reject that generation and retain the last valid catalogue.
+    pub fn publish_metadata(&self, owner: &str, repo: &str, tag: &str, dir: &Path) -> Result<()> {
+        let files = ["store.json", "description.md", "targets.json"];
+        for name in files {
+            anyhow::ensure!(dir.join(name).is_file(), "missing metadata file {name}");
+        }
+        let release = self.ensure_release(owner, repo, tag)?;
+        let assets = self.list_assets(&release)?;
+        for name in files {
+            for asset in assets.iter().filter(|asset| asset.name == name) {
+                let url = format!(
+                    "{}/repos/{owner}/{repo}/releases/assets/{}",
+                    self.api_base, asset.id
+                );
+                self.request(|| Ok(self.request_builder(self.client.delete(&url)).send()?))?
+                    .error_for_status()?;
+            }
+            self.upload_asset(&release, name, &dir.join(name))?;
+        }
+        Ok(())
+    }
+
     pub fn publish_manifest_and_packs(
         &self,
         owner: &str,

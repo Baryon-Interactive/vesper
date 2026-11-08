@@ -15,6 +15,8 @@ use std::time::Duration;
 #[derive(Default)]
 struct Remote {
     created: bool,
+    metadata_created: bool,
+    metadata_assets: BTreeMap<String, Vec<u8>>,
     assets: BTreeMap<String, Vec<u8>>,
     old_assets: BTreeMap<String, Vec<u8>>,
     requests: Vec<(String, String, Vec<u8>)>,
@@ -82,7 +84,28 @@ impl GitHubMock {
                 let release = json!({"id":2,"tag_name":"r2","upload_url":format!("{origin}/uploads{{?name,label}}"),"assets_url":format!("{origin}/assets")});
                 let mut status = "200 OK";
                 let mut extra = String::new();
-                let result = if path.ends_with("/releases/tags/r2") {
+                let metadata_release = json!({"id":3,"tag_name":"vesper-metadata","upload_url":format!("{origin}/metadata-uploads{{?name,label}}"),"assets_url":format!("{origin}/metadata-assets")});
+                let names = ["targets.json", "store.json", "description.md"];
+                let result = if path.ends_with("/releases/tags/vesper-metadata") {
+                    if !remote.metadata_created {
+                        status = "404 Not Found";
+                    }
+                    serde_json::to_vec(&metadata_release).unwrap()
+                } else if path == "/metadata-assets" {
+                    let assets: Vec<_> = names.iter().enumerate().filter_map(|(id, name)| remote.metadata_assets.get(*name).map(|bytes| json!({"id":100+id,"name":name,"size":bytes.len(),"browser_download_url":format!("{origin}/metadata/{name}")}))).collect();
+                    serde_json::to_vec(&assets).unwrap()
+                } else if method == "DELETE" && path.contains("/releases/assets/") {
+                    let id: usize = path.rsplit('/').next().unwrap().parse().unwrap();
+                    remote.metadata_assets.remove(names[id - 100]);
+                    status = "204 No Content";
+                    Vec::new()
+                } else if method == "POST" && path.starts_with("/metadata-uploads?name=") {
+                    remote.metadata_assets.insert(
+                        path.trim_start_matches("/metadata-uploads?name=").into(),
+                        body,
+                    );
+                    b"{}".to_vec()
+                } else if path.ends_with("/releases/tags/r2") {
                     if !remote.created {
                         status = "404 Not Found";
                     }
@@ -90,12 +113,19 @@ impl GitHubMock {
                 } else if path.ends_with("/releases/tags/r1") {
                     serde_json::to_vec(&json!({"id":1,"tag_name":"r1","upload_url":"unused","assets_url":format!("{origin}/old-assets")})).unwrap()
                 } else if method == "POST" && path.ends_with("/releases") {
-                    assert_eq!(
-                        serde_json::from_slice::<Value>(&body).unwrap()["tag_name"],
-                        "r2"
-                    );
-                    remote.created = true;
-                    serde_json::to_vec(&release).unwrap()
+                    if serde_json::from_slice::<Value>(&body).unwrap()["tag_name"]
+                        == "vesper-metadata"
+                    {
+                        remote.metadata_created = true;
+                        serde_json::to_vec(&metadata_release).unwrap()
+                    } else {
+                        assert_eq!(
+                            serde_json::from_slice::<Value>(&body).unwrap()["tag_name"],
+                            "r2"
+                        );
+                        remote.created = true;
+                        serde_json::to_vec(&release).unwrap()
+                    }
                 } else if method == "POST" && path.starts_with("/uploads?name=") {
                     let name = path.trim_start_matches("/uploads?name=");
                     remote.assets.insert(name.into(), body);
@@ -187,6 +217,90 @@ fn assert_index(index: &Path, channel: &str) {
         targets["signed"]["sources"][0]["url_template"],
         "https://github.com/owner/repo/releases/download/{release}/{pack_id}"
     );
+}
+
+#[test]
+fn publish_self_hosted_creates_and_replaces_metadata_release_assets() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input");
+    let build = temp.path().join("build");
+    let metadata = temp.path().join("metadata");
+    fs::create_dir_all(&input).unwrap();
+    fs::write(input.join("game.bin"), vec![42; 8192]).unwrap();
+    fs::create_dir_all(&metadata).unwrap();
+    fs::write(metadata.join("store.json"), b"{}").unwrap();
+    fs::write(metadata.join("description.md"), b"First description").unwrap();
+    assert_success(vesper(&[
+        "pack",
+        "--input",
+        input.to_str().unwrap(),
+        "--output",
+        build.to_str().unwrap(),
+        "--app-id",
+        "test.publish",
+        "--platform",
+        "windows-x64",
+        "--version",
+        "r2",
+    ]));
+    let server = GitHubMock::new();
+    let args = [
+        "publish",
+        build.to_str().unwrap(),
+        "--metadata-dir",
+        metadata.to_str().unwrap(),
+        "--owner",
+        "owner",
+        "--repo",
+        "repo",
+        "--token",
+        "mock-token",
+        "--api-base",
+        &server.base,
+        "--upload-base",
+        &server.base,
+    ];
+    let first = vesper(&args);
+    assert!(String::from_utf8_lossy(&first.stdout)
+        .contains("metadata_url=https://github.com/owner/repo/releases/download/vesper-metadata/"));
+    assert_success(first);
+    let old = server.remote.lock().unwrap().metadata_assets.clone();
+    assert_eq!(old.len(), 3);
+    fs::write(metadata.join("description.md"), b"Second description").unwrap();
+    assert_success(vesper(&args));
+    let remote = server.remote.lock().unwrap();
+    assert_eq!(remote.metadata_assets.len(), 3);
+    let targets: vesper_meta::Signed<vesper_meta::AppTargetsSigned> =
+        serde_json::from_slice(&remote.metadata_assets["targets.json"]).unwrap();
+    assert_eq!(targets.signed.version, 2);
+    vesper_meta::verify_store_bytes(
+        &targets.signed,
+        "description.md",
+        &remote.metadata_assets["description.md"],
+    )
+    .unwrap();
+    assert_eq!(
+        remote
+            .requests
+            .iter()
+            .filter(|(method, _, _)| method == "DELETE")
+            .count(),
+        3
+    );
+    assert_eq!(
+        remote.metadata_assets["description.md"],
+        b"Second description"
+    );
+    assert_eq!(remote.assets.len(), 2);
+    assert_eq!(
+        remote
+            .requests
+            .iter()
+            .filter(|(method, path, _)| method == "POST" && path.ends_with("/releases"))
+            .count(),
+        2
+    );
+    assert_ne!(old["targets.json"], remote.metadata_assets["targets.json"]);
 }
 
 #[test]

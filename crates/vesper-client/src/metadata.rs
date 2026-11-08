@@ -15,7 +15,74 @@ const BUILTIN_ROOT: &str = include_str!("../config/root.json");
 
 /// Verify and cache the signed metadata chain for an application.
 pub fn verify_app(base: &str, app_id: &str) -> Result<(Signed<AppTargetsSigned>, AppRoute)> {
+    vesper_meta::hosting::validate_app_id(app_id)?;
     fetch_targets(base, app_id)
+}
+
+static SEEN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Prefer developer metadata for update/install operations. Route authority is
+/// always obtained from the central root-signed registry. Report rejections and
+/// fall back to the complete central chain without lowering the local high-water mark.
+pub fn verify_update(base: &str, app_id: &str) -> Result<(Signed<AppTargetsSigned>, AppRoute)> {
+    vesper_meta::hosting::validate_app_id(app_id)?;
+    let _lock = SEEN_LOCK.lock().unwrap();
+    let (_, routes) = metadata_root(base)?;
+    let route = routes
+        .signed
+        .apps
+        .get(app_id)
+        .cloned()
+        .context("application is not present in routes.json")?;
+    let seen_path = state_dir()
+        .join("metadata")
+        .join(app_id)
+        .join("highest-targets.json");
+    let mut previous: Option<Signed<AppTargetsSigned>> = if seen_path.exists() {
+        Some(serde_json::from_slice(&fs::read(&seen_path)?)?)
+    } else {
+        None
+    };
+    let central_path = seen_path.with_file_name("targets.json");
+    if central_path.exists() {
+        let central: Signed<AppTargetsSigned> = serde_json::from_slice(&fs::read(central_path)?)?;
+        if previous
+            .as_ref()
+            .is_none_or(|p| central.signed.version > p.signed.version)
+        {
+            previous = Some(central);
+        }
+    }
+    if let Some(url) = &route.metadata_url {
+        match vesper_meta::hosting::Bundle::fetch(url, &route, previous.as_ref()) {
+            Ok(bundle) => {
+                cache_metadata(app_id, "highest-targets.json", &bundle.targets)?;
+                eprintln!("{app_id}: update metadata source=developer version={}", bundle.targets.signed.version);
+                return Ok((bundle.targets, route));
+            }
+            Err(error) => eprintln!("{app_id}: developer metadata rejected: {error:#}; falling back to central catalogue"),
+        }
+    }
+    let (targets, route) = fetch_targets(base, app_id)?;
+    let files = [
+        canonical_bytes(&targets)?,
+        vesper_meta::hosting::fetch_file(&join_url(base, &format!("apps/{app_id}")), "store.json")?,
+        vesper_meta::hosting::fetch_file(
+            &join_url(base, &format!("apps/{app_id}")),
+            "description.md",
+        )?,
+    ];
+    vesper_meta::hosting::Bundle {
+        targets: targets.clone(),
+        files,
+    }
+    .verify(&route, previous.as_ref())?;
+    cache_metadata(app_id, "highest-targets.json", &targets)?;
+    eprintln!(
+        "{app_id}: update metadata source=central version={}",
+        targets.signed.version
+    );
+    Ok((targets, route))
 }
 /// Reject expired metadata and monotonic version rollback.
 pub fn check_version(version: u64, expires: u64, now: u64, previous: Option<u64>) -> Result<()> {

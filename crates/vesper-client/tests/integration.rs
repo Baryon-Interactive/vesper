@@ -143,6 +143,19 @@ impl IndexServer {
     fn publish(&self, manifest: &Manifest, bytes: Vec<u8>, developer: &KeyPair, online: &KeyPair) {
         use vesper_meta::*;
         let app = &manifest.app_id;
+        let version = self
+            .files
+            .lock()
+            .unwrap()
+            .get(&format!("/apps/{app}/targets.json"))
+            .map(|bytes| {
+                serde_json::from_slice::<Signed<AppTargetsSigned>>(bytes)
+                    .unwrap()
+                    .signed
+                    .version
+                    + 1
+            })
+            .unwrap_or(2);
         let root = sign(
             RootSigned {
                 typ: "root".into(),
@@ -177,6 +190,7 @@ impl IndexServer {
                     AppRoute {
                         keys: vec![developer.public_hex()],
                         threshold: 1,
+                        metadata_url: None,
                     },
                 )]),
             },
@@ -191,12 +205,12 @@ impl IndexServer {
                     .collect(),
                 typ: "targets".into(),
                 spec_version: "1.0.0".into(),
-                version: 2,
+                version,
                 expires: expires_in(1),
                 channels: BTreeMap::from([(
                     "stable".into(),
                     AppChannel {
-                        version: 2,
+                        version,
                         platform: manifest.platform.clone(),
                         encrypted: false,
                         key_id: 0,
@@ -222,17 +236,17 @@ impl IndexServer {
             SnapshotSigned {
                 typ: "snapshot".into(),
                 spec_version: "1.0.0".into(),
-                version: 2,
+                version,
                 expires: expires_in(1),
                 meta: BTreeMap::from([(
                     "targets.json".into(),
-                    metadata_description(&targets, 2).unwrap(),
+                    metadata_description(&targets, version).unwrap(),
                 )]),
             },
             &[online],
         )
         .unwrap();
-        let timestamp = build_timestamp(&snapshot, 2, expires_in(1), online).unwrap();
+        let timestamp = build_timestamp(&snapshot, version, expires_in(1), online).unwrap();
         self.json("/root.json", &root);
         self.json("/routes.json", &routes);
         self.json(&format!("/apps/{app}/store.json"), &json!({}));
@@ -277,6 +291,144 @@ fn install(manifest: &Manifest, build_root: &Path, target: &Path) {
     ))])
     .unwrap();
     tasks::install_at(target, manifest, &fetcher).unwrap();
+}
+
+#[test]
+fn developer_direct_update_tamper_fallback_and_persisted_rollback_rejection() {
+    use vesper_meta::{RoutesSigned, Signed};
+    let temp = tempdir().unwrap();
+    let state = temp.path().join("state");
+    let _state_env = StateEnv::new(&state);
+    let input = temp.path().join("input");
+    fs::create_dir_all(&input).unwrap();
+    fs::write(input.join("game"), "game").unwrap();
+    let build = build(&input, &temp.path().join("build"), "test.hosted", "1");
+    let central = IndexServer::new();
+    let developer = IndexServer::new();
+    let online = KeyPair::generate();
+    let key = KeyPair::generate();
+    central.publish(
+        &build.manifest,
+        build.manifest.encode().unwrap(),
+        &key,
+        &online,
+    );
+    let mut routes: Signed<RoutesSigned> =
+        serde_json::from_slice(&central.files.lock().unwrap()["/routes.json"]).unwrap();
+    routes
+        .signed
+        .apps
+        .get_mut("test.hosted")
+        .unwrap()
+        .metadata_url = Some(developer.base.clone());
+    central.json(
+        "/routes.json",
+        &vesper_meta::sign(routes.signed, &[&online]).unwrap(),
+    );
+    let mut targets: vesper_meta::Signed<AppTargetsSigned> =
+        serde_json::from_slice(&central.files.lock().unwrap()["/apps/test.hosted/targets.json"])
+            .unwrap();
+    developer.json("/store.json", &json!({}));
+    developer.json("/description.md", &json!({}));
+    targets.signed.version = 3;
+    let new = vesper_meta::sign(targets.signed.clone(), &[&key]).unwrap();
+    developer.json("/targets.json", &new);
+    let (direct, _) = metadata::verify_update(&central.base, "test.hosted").unwrap();
+    assert_eq!(direct.signed.version, 3);
+    let highest = state.join("metadata/test.hosted/highest-targets.json");
+    assert_eq!(
+        vesper_meta::read_json::<vesper_meta::Signed<AppTargetsSigned>>(&highest)
+            .unwrap()
+            .signed
+            .version,
+        3
+    );
+    // Catalogue browsing remains usable while central aggregation is behind.
+    assert_eq!(
+        metadata::verify_app(&central.base, "test.hosted")
+            .unwrap()
+            .0
+            .signed
+            .version,
+        2
+    );
+    // A lower direct version is rejected; a lower central fallback cannot reset the high-water mark.
+    targets.signed.version = 1;
+    developer.json(
+        "/targets.json",
+        &vesper_meta::sign(targets.signed.clone(), &[&key]).unwrap(),
+    );
+    assert!(metadata::verify_update(&central.base, "test.hosted")
+        .unwrap_err()
+        .to_string()
+        .contains("rollback"));
+    assert_eq!(
+        vesper_meta::read_json::<vesper_meta::Signed<AppTargetsSigned>>(&highest)
+            .unwrap()
+            .signed
+            .version,
+        3
+    );
+    // Use a separate client state to prove tampered direct data falls back and reports the rejection.
+    fs::remove_file(&highest).unwrap();
+    developer.json("/targets.json", &new);
+    developer
+        .files
+        .lock()
+        .unwrap()
+        .insert("/store.json".into(), b"tampered".to_vec());
+    assert_eq!(
+        metadata::verify_update(&central.base, "test.hosted")
+            .unwrap()
+            .0
+            .signed
+            .version,
+        2
+    );
+    assert_eq!(
+        vesper_meta::read_json::<vesper_meta::Signed<AppTargetsSigned>>(&highest)
+            .unwrap()
+            .signed
+            .version,
+        2
+    );
+    // Same version equivocation is rejected even when signed by the developer.
+    let mut changed = targets.signed;
+    changed.version = 2;
+    changed.expires += 10;
+    developer.json("/store.json", &json!({}));
+    developer.json(
+        "/targets.json",
+        &vesper_meta::sign(changed, &[&key]).unwrap(),
+    );
+    assert_eq!(
+        metadata::verify_update(&central.base, "test.hosted")
+            .unwrap()
+            .0
+            .signed
+            .version,
+        2
+    );
+}
+
+#[test]
+fn media_returns_verified_bytes_and_rejects_changed_response() {
+    let server = IndexServer::new();
+    let bytes = b"verified image bytes";
+    server
+        .files
+        .lock()
+        .unwrap()
+        .insert("/cover.png".into(), bytes.to_vec());
+    let digest = hex::encode(vesper_format::hash_bytes(bytes));
+    let url = format!("{}/cover.png", server.base);
+    assert_eq!(vesper_client::verify_media(&url, &digest).unwrap(), bytes);
+    server
+        .files
+        .lock()
+        .unwrap()
+        .insert("/cover.png".into(), b"changed".to_vec());
+    assert!(vesper_client::verify_media(&url, &digest).is_err());
 }
 
 #[test]
@@ -433,7 +585,7 @@ fn launcher_index_fresh_install_uses_each_pack_release() {
     let path = "/apps/test.split/timestamp.json";
     let mut timestamp: serde_json::Value =
         serde_json::from_slice(&server.files.lock().unwrap()[path]).unwrap();
-    timestamp["signed"]["version"] = json!(3);
+    timestamp["signed"]["version"] = json!(timestamp["signed"]["version"].as_u64().unwrap() + 1);
     server.json(path, &timestamp);
     let error = vesper_client::metadata::verify_app(&server.base, "test.split").unwrap_err();
     assert!(format!("{error:#}").contains("signature"), "{error:#}");
@@ -790,6 +942,7 @@ fn flow_metadata_tamper_rollback_and_expiry_are_distinct() {
     let route = AppRoute {
         keys: vec![key.public_hex()],
         threshold: 1,
+        metadata_url: None,
     };
     let payload = AppTargetsSigned {
         metadata: ["store.json", "description.md"]

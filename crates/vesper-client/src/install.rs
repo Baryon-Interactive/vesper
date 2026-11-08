@@ -154,7 +154,7 @@ pub(crate) fn run_install(
         task.status = "verifying".into()
     });
     let settings = state.settings.lock().unwrap().clone();
-    let (targets, _) = metadata::verify_app(&request.metadata_base, &request.app_id)?;
+    let (targets, _) = metadata::verify_update(&request.metadata_base, &request.app_id)?;
     let channel = targets
         .signed
         .channels
@@ -371,7 +371,7 @@ pub fn check_update(install_dir: &str, state: &AppState) -> Result<UpdateCheck> 
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "stable".into());
-    let (targets, _) = metadata::verify_app(&settings.api_base, &app_id)?;
+    let (targets, _) = metadata::verify_update(&settings.api_base, &app_id)?;
     let target = targets
         .signed
         .channels

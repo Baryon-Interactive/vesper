@@ -74,6 +74,7 @@ fn fixture(index: &Path) -> KeyPair {
                     AppRoute {
                         keys: vec![key.public_hex()],
                         threshold: 1,
+                        metadata_url: None,
                     },
                 )]),
             },
@@ -434,7 +435,7 @@ fn signing_push_conflict_resigns_latest_main_before_reporting_deployment_sha() {
             bin.join("git"),
             r##"#!/usr/bin/env bash
 set -euo pipefail
-if [ "$1" = push ] && [ ! -f "$CONFLICT_MARKER" ]; then
+if [[ " $* " == *" push "* ]] && [ ! -f "$CONFLICT_MARKER" ]; then
   touch "$CONFLICT_MARKER"
   "$REAL_GIT" -C "$RIVAL" push origin HEAD:main
 fi
@@ -507,4 +508,132 @@ exec "$REAL_GIT" "$@"
             format!("sha={}", String::from_utf8(head.stdout).unwrap().trim())
         );
     }
+}
+
+#[test]
+fn aggregate_isolates_failed_app_reports_summary_and_initializes_registered_hosted_app() {
+    use std::io::{Read, Write};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let index = temp.path().join("index");
+    let key = fixture(&index);
+    success(cli(&index, "snapshot", &["--app", "demo"]));
+    let bad = index.join("apps/bad");
+    fs::create_dir_all(&bad).unwrap();
+    for name in [
+        "targets.json",
+        "store.json",
+        "description.md",
+        "snapshot.json",
+        "timestamp.json",
+    ] {
+        fs::copy(index.join("apps/demo").join(name), bad.join(name)).unwrap();
+    }
+    let old_bad = fs::read(bad.join("targets.json")).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let mut routes: Signed<RoutesSigned> = read_json(&index.join("routes.json")).unwrap();
+    let good_route = AppRoute {
+        keys: vec![key.public_hex()],
+        threshold: 1,
+        metadata_url: Some(format!("{base}/good/")),
+    };
+    routes.signed.apps.insert("demo".into(), good_route.clone());
+    routes
+        .signed
+        .apps
+        .insert("fresh".into(), good_route.clone());
+    routes.signed.apps.insert(
+        "bad".into(),
+        AppRoute {
+            metadata_url: Some(format!("{base}/bad/")),
+            ..good_route
+        },
+    );
+    write_json(
+        &index.join("routes.json"),
+        &sign(routes.signed, &[&key]).unwrap(),
+    )
+    .unwrap();
+    git(&index, &["init", "--initial-branch=main"]);
+    git(&index, &["config", "user.name", "Index test"]);
+    git(&index, &["config", "user.email", "index@example.test"]);
+    git(&index, &["add", "."]);
+    git(&index, &["commit", "-m", "Register developer hosting"]);
+    let mut payload: Signed<AppTargetsSigned> =
+        read_json(&index.join("apps/demo/targets.json")).unwrap();
+    payload.signed.version = 8;
+    let good = canonical_bytes(&sign(payload.signed.clone(), &[&key]).unwrap()).unwrap();
+    let wrong = canonical_bytes(&sign(payload.signed, &[&KeyPair::generate()]).unwrap()).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = stop.clone();
+    let worker = std::thread::spawn(move || {
+        while !stopping.load(Ordering::Relaxed) {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                continue;
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0; 8192];
+            let Ok(n) = stream.read(&mut request) else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&request[..n]);
+            let path = text.split_whitespace().nth(1).unwrap_or("");
+            let bytes: &[u8] = if path == "/good/targets.json" {
+                &good
+            } else if path == "/bad/targets.json" {
+                &wrong
+            } else {
+                b"{}"
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            );
+            let _ = stream.write_all(bytes);
+        }
+    });
+    let summary = temp.path().join("summary.md");
+    let output = Command::new(env!("CARGO_BIN_EXE_vesper"))
+        .args(["index", "aggregate", "--index", index.to_str().unwrap()])
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .output()
+        .unwrap();
+    stop.store(true, Ordering::Relaxed);
+    worker.join().unwrap();
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains("bad: rejected:"), "{report}");
+    assert!(report.contains("demo: updated"), "{report}");
+    assert!(report.contains("fresh: updated"), "{report}");
+    assert!(fs::read_to_string(summary)
+        .unwrap()
+        .contains("bad: rejected:"));
+    success(output);
+    assert_eq!(old_bad, fs::read(bad.join("targets.json")).unwrap());
+    success(
+        Command::new(env!("CARGO_BIN_EXE_vesper"))
+            .args([
+                "index",
+                "snapshot",
+                "--index",
+                index.to_str().unwrap(),
+                "--app",
+                "fresh",
+            ])
+            .env("VESPER_ONLINE_KEY", SECRET)
+            .output()
+            .unwrap(),
+    );
+    let snapshot: Signed<SnapshotSigned> =
+        read_json(&index.join("apps/fresh/snapshot.json")).unwrap();
+    assert_eq!(snapshot.signed.version, 1);
+    assert_eq!(snapshot.signed.meta["targets.json"].version, 8);
 }

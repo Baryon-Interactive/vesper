@@ -98,6 +98,12 @@ enum Command {
         json: bool,
     },
     Publish {
+        /// Local developer metadata directory (store, description and version history).
+        #[arg(long, conflicts_with = "index")]
+        metadata_dir: Option<PathBuf>,
+        /// Mutable metadata release, separate from immutable game build releases.
+        #[arg(long, default_value = "vesper-metadata")]
+        metadata_tag: String,
         /// Release tag; defaults to the manifest version. Required when pack tags exclude that version.
         #[arg(long)]
         tag: Option<String>,
@@ -326,6 +332,13 @@ enum IndexCommand {
         app: String,
         #[arg(long)]
         pubkey: String,
+        #[arg(long)]
+        metadata_url: Option<String>,
+    },
+    /// Fetch and verify developer-hosted metadata, retaining each app on failure.
+    Aggregate {
+        #[arg(long)]
+        index: PathBuf,
     },
     RouteSign {
         #[arg(long)]
@@ -349,7 +362,11 @@ enum IndexCommand {
 }
 
 fn main() -> Result<()> {
-    match Cli::parse().command {
+    run_command(Cli::parse().command)
+}
+
+fn run_command(command: Command) -> Result<()> {
+    match command {
         Command::Init {
             output,
             app_id,
@@ -459,6 +476,8 @@ fn main() -> Result<()> {
             diff_check(&current, &against, depot_key_hex.as_deref(), key_id, json)?;
         }
         Command::Publish {
+            metadata_dir,
+            metadata_tag,
             tag,
             build,
             channel,
@@ -476,6 +495,8 @@ fn main() -> Result<()> {
             index.as_deref(),
             dry_run,
             PublishRemote {
+                metadata_dir: metadata_dir.as_deref(),
+                metadata_tag: &metadata_tag,
                 owner: owner.as_deref(),
                 repo: repo.as_deref(),
                 token: token.as_deref(),
@@ -1004,6 +1025,8 @@ fn developer_key(key_file: Option<&std::path::Path>) -> Result<KeyPair> {
 }
 
 struct PublishRemote<'a> {
+    metadata_dir: Option<&'a std::path::Path>,
+    metadata_tag: &'a str,
     owner: Option<&'a str>,
     repo: Option<&'a str>,
     token: Option<&'a str>,
@@ -1034,7 +1057,22 @@ fn publish_local(
             bytes = bytes.saturating_add(fs::metadata(path)?.len());
         }
     }
-    if dry_run || index.is_none() {
+    let self_hosted = index.is_none() && remote.owner.is_some() && remote.repo.is_some();
+    anyhow::ensure!(
+        remote.owner.is_some() == remote.repo.is_some(),
+        "--owner and --repo must be supplied together"
+    );
+    anyhow::ensure!(
+        remote.metadata_dir.is_none() || self_hosted,
+        "--metadata-dir requires --owner and --repo without --index"
+    );
+    if self_hosted {
+        anyhow::ensure!(
+            !remote.metadata_tag.trim().is_empty() && remote.metadata_tag != tag,
+            "metadata tag must be nonempty and separate from the build tag"
+        );
+    }
+    if dry_run || (index.is_none() && !self_hosted) {
         println!(
             "publish dry-run app_id={} channel={} version={} packs={} bytes={}",
             manifest.app_id,
@@ -1072,6 +1110,25 @@ fn publish_local(
             result.uploaded.len(),
             result.skipped_existing.len()
         );
+        if self_hosted {
+            let dir = remote
+                .metadata_dir
+                .unwrap_or_else(|| std::path::Path::new("metadata"));
+            write_publish_metadata(
+                dir,
+                channel,
+                tag,
+                &manifest_path,
+                &manifest,
+                Some((owner, repo)),
+            )?;
+            publisher.publish_metadata(owner, repo, remote.metadata_tag, dir)?;
+            println!(
+                "metadata_url=https://github.com/{owner}/{repo}/releases/download/{}/",
+                remote.metadata_tag
+            );
+            return Ok(());
+        }
     }
     write_publish_index(
         index.unwrap(),
@@ -1111,9 +1168,20 @@ fn write_publish_index(
     github: Option<(&str, &str)>,
 ) -> Result<()> {
     let app_dir = index.join("apps").join(&manifest.app_id);
-    fs::create_dir_all(&app_dir)?;
+    write_publish_metadata(&app_dir, channel, tag, manifest_path, manifest, github)
+}
+
+fn write_publish_metadata(
+    app_dir: &std::path::Path,
+    channel: &str,
+    tag: &str,
+    manifest_path: &std::path::Path,
+    manifest: &Manifest,
+    github: Option<(&str, &str)>,
+) -> Result<()> {
+    fs::create_dir_all(app_dir)?;
     let targets_path = app_dir.join("targets.json");
-    let metadata = vesper_meta::store_metadata(&app_dir)?;
+    let metadata = vesper_meta::store_metadata(app_dir)?;
     let key = developer_key(None)?;
     let mut targets = if targets_path.exists() {
         read_json::<vesper_meta::Signed<AppTargetsSigned>>(&targets_path)?.signed
@@ -1307,7 +1375,13 @@ fn run_index_command(command: IndexCommand) -> Result<()> {
             );
             Ok(())
         }
-        IndexCommand::RouteAdd { index, app, pubkey } => index_route_add(&index, &app, &pubkey),
+        IndexCommand::RouteAdd {
+            index,
+            app,
+            pubkey,
+            metadata_url,
+        } => index_route_add(&index, &app, &pubkey, metadata_url.as_deref()),
+        IndexCommand::Aggregate { index } => index_aggregate(&index),
         IndexCommand::RouteSign {
             index,
             root_key_file,
@@ -1319,9 +1393,16 @@ fn run_index_command(command: IndexCommand) -> Result<()> {
             targets_only,
         } => index_verify(&index, &apps, previous.as_deref(), targets_only),
         IndexCommand::PendingSnapshots { index } => {
+            let routes: Signed<RoutesSigned> = read_json(&index.join("routes.json"))?;
             for entry in fs::read_dir(index.join("apps"))? {
                 let entry = entry?;
-                if entry.file_type()?.is_dir() && snapshot_needed(&entry.path())? {
+                if routes
+                    .signed
+                    .apps
+                    .contains_key(&entry.file_name().to_string_lossy().to_string())
+                    && entry.file_type()?.is_dir()
+                    && snapshot_needed(&entry.path())?
+                {
                     println!("{}", entry.file_name().to_string_lossy());
                 }
             }
@@ -1430,7 +1511,16 @@ fn index_init(
     Ok(())
 }
 
-fn index_route_add(index: &std::path::Path, app: &str, pubkey: &str) -> Result<()> {
+fn index_route_add(
+    index: &std::path::Path,
+    app: &str,
+    pubkey: &str,
+    metadata_url: Option<&str>,
+) -> Result<()> {
+    vesper_meta::hosting::validate_app_id(app)?;
+    if let Some(url) = metadata_url {
+        vesper_meta::hosting::metadata_base(url)?;
+    }
     let path = index.join("routes.json");
     let mut doc: vesper_meta::Signed<RoutesSigned> = read_json(&path)?;
     let _: [u8; 32] = hex::decode(pubkey)
@@ -1440,13 +1530,55 @@ fn index_route_add(index: &std::path::Path, app: &str, pubkey: &str) -> Result<(
     let route = doc.signed.apps.entry(app.into()).or_insert(AppRoute {
         keys: Vec::new(),
         threshold: 1,
+        metadata_url: None,
     });
+    if let Some(url) = metadata_url {
+        route.metadata_url = Some(url.into());
+    }
     if !route.keys.contains(&pubkey.to_string()) {
         route.keys.push(pubkey.to_string());
     }
     doc.signed.version = doc.signed.version.saturating_add(1);
     doc.signatures.clear();
     write_json(&path, &doc)?;
+    Ok(())
+}
+
+fn index_aggregate(index: &std::path::Path) -> Result<()> {
+    let root: Signed<RootSigned> = read_json(&index.join("root.json"))?;
+    verify_role(
+        &root,
+        &root.signed.keys,
+        root.signed.roles.get("root").context("root role missing")?,
+    )?;
+    let routes: Signed<RoutesSigned> = read_json(&index.join("routes.json"))?;
+    vesper_meta::verify_routes(&routes, &root)?;
+    let mut report = String::new();
+    for (id, route) in &routes.signed.apps {
+        if route.metadata_url.is_none() {
+            continue;
+        }
+        let result = match vesper_meta::hosting::aggregate_app(index, id, route) {
+            Ok(status) => status.to_string(),
+            Err(error) => format!("rejected: {error:#}"),
+        };
+        let line = format!("{id}: {result}");
+        println!("{line}");
+        report.push_str(&line);
+        report.push('\n');
+    }
+    if let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+        use std::io::Write;
+        // A code block prevents fetched error strings from becoming summary markup.
+        let safe = report.replace('`', "'");
+        writeln!(
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?,
+            "## Metadata aggregation\n\n```text\n{safe}```"
+        )?;
+    }
     Ok(())
 }
 
@@ -1510,6 +1642,14 @@ fn index_verify(
             .get(&app)
             .context("app missing from routes")?;
         let path = index.join("apps").join(&app).join("targets.json");
+        // A registered hosted app enters the catalogue after its first valid aggregation.
+        if apps.is_empty()
+            && route.metadata_url.is_some()
+            && !path.exists()
+            && !index.join("apps").join(&app).exists()
+        {
+            continue;
+        }
         let doc: vesper_meta::Signed<AppTargetsSigned> = read_json(&path)?;
         let old = if let Some(base) = previous {
             let old_path = base.join("apps").join(&app).join("targets.json");
@@ -1629,6 +1769,27 @@ fn index_snapshot(
 ) -> Result<()> {
     let dir = index.join("apps").join(app);
     let targets: Signed<AppTargetsSigned> = read_json(&dir.join("targets.json"))?;
+    let root: Signed<RootSigned> = read_json(&index.join("root.json"))?;
+    let routes: Signed<RoutesSigned> = read_json(&index.join("routes.json"))?;
+    vesper_meta::verify_routes(&routes, &root)?;
+    let route = routes
+        .signed
+        .apps
+        .get(app)
+        .context("app missing from routes")?;
+    vesper_meta::verify_app_targets(&targets, route, None)?;
+    vesper_meta::verify_store_metadata(&targets.signed, &dir)?;
+    // A full registry history distinguishes a hosted app's first aggregation
+    // from deleted online metadata. Existing historical versions still win.
+    let hosted_initial = route.metadata_url.is_some() && {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(index)
+            .args(["rev-parse", "--is-shallow-repository"])
+            .output()?;
+        output.status.success() && output.stdout == b"false\n"
+    };
+    let initialize = initialize || hosted_initial;
     let snapshot_path = dir.join("snapshot.json");
     let old_version = online_version(index, app, "snapshot.json", previous, initialize)?;
     let current_version = if snapshot_path.exists() {
@@ -1690,12 +1851,18 @@ fn index_timestamp(
     if !all {
         anyhow::bail!("--all is required");
     }
+    let routes: Signed<RoutesSigned> = read_json(&index.join("routes.json"))?;
     let key = KeyPair::from_secret_hex(
         &std::env::var("VESPER_ONLINE_KEY").context("VESPER_ONLINE_KEY is required")?,
     )?;
     for entry in fs::read_dir(index.join("apps"))? {
         let entry = entry?;
-        if !entry.file_type()?.is_dir() {
+        if !entry.file_type()?.is_dir()
+            || !routes
+                .signed
+                .apps
+                .contains_key(&entry.file_name().to_string_lossy().to_string())
+        {
             continue;
         }
         let dir = entry.path();
