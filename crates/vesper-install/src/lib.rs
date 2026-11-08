@@ -2035,7 +2035,13 @@ mod tests {
             .install(&output.manifest, &fetcher)
             .unwrap();
         assert!(started.elapsed() < Duration::from_secs(10));
-        thread::sleep(Duration::from_millis(150));
+        // The stalled server writes 1 KiB every 100 ms; on Linux the first write
+        // after the client closes still succeeds, so detection takes two writes.
+        // An uncancelled stall would need hours, so a 2 s bound still proves it.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while slow.interrupted_connections() == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
         assert!(
             slow.interrupted_connections() > 0,
             "stalled loser was not cancelled: requests={} bytes={}",
