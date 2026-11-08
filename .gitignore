@@ -1,0 +1,47 @@
+# Rust build output (application lockfiles stay tracked)
+target/
+/fuzz/Cargo.lock
+
+# Node dependencies, frontend bundles and test output
+node_modules/
+coverage/
+/launcher/dist/
+/index-template/dist/
+/index-template/test/.tmp/
+
+# Tauri generated schemas and local demo state
+/launcher/src-tauri/gen/
+/launcher/dev/out/
+/launcher/dev/work/
+/launcher/dev/keys/
+
+# Worker, experiment and temporary local output
+.wrangler/
+/index-template/.tools/
+/experiments/download-bench/results/
+/experiments/download-bench/testdata/
+/experiments/patch-size/results/
+/tmp/
+
+# Python environments and bytecode
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.vs/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Local secrets; the launcher updater public key is intentionally versioned
+*.key
+!/launcher/src-tauri/config/updater-public.key
+*.devkey
+.env*
+.dev.vars*

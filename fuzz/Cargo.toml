@@ -1,0 +1,23 @@
+[package]
+publish = false
+name = "vesper-fuzz-targets"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+vesper-format = { path = "../crates/vesper-format" }
+
+[[bin]]
+name = "manifest"
+path = "manifest.rs"
+
+[[bin]]
+name = "frame"
+path = "frame.rs"
+
+[[bin]]
+name = "path"
+path = "path.rs"

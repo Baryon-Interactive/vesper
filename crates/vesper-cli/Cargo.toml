@@ -1,0 +1,27 @@
+[package]
+publish = false
+name = "vesper-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "vesper"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+vesper-fetch = { path = "../vesper-fetch" }
+vesper-format = { path = "../vesper-format" }
+vesper-install = { path = "../vesper-install" }
+vesper-meta = { path = "../vesper-meta" }
+vesper-publish = { path = "../vesper-publish" }
+hex.workspace = true
+serde_json.workspace = true
+walkdir.workspace = true
+zstd.workspace = true
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

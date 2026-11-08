@@ -1,0 +1,21 @@
+[package]
+publish = false
+name = "vesper-install"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+vesper-fetch = { path = "../vesper-fetch" }
+vesper-format = { path = "../vesper-format" }
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+walkdir.workspace = true
+windows-sys.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,14 @@
+[package]
+publish = false
+name = "sign-paid-target"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+anyhow = "1.0"
+vesper-format = { path = "../../../crates/vesper-format" }
+vesper-meta = { path = "../../../crates/vesper-meta" }
+hex = "0.4"
+

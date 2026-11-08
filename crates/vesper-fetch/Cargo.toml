@@ -1,0 +1,16 @@
+[package]
+publish = false
+name = "vesper-fetch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+vesper-format = { path = "../vesper-format" }
+reqwest.workspace = true
+sha2.workspace = true
+urlencoding.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

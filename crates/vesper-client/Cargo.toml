@@ -1,0 +1,25 @@
+[package]
+publish = false
+name = "vesper-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+hex.workspace = true
+vesper-fetch = { path = "../vesper-fetch" }
+vesper-format = { path = "../vesper-format" }
+vesper-install = { path = "../vesper-install" }
+vesper-meta = { path = "../vesper-meta" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize = "1.8"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
