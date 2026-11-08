@@ -91,6 +91,9 @@ try {
     Click-Button 'Update'
     Click-Button 'Library'
     Capture '06-library-v2' @('Lanterns at Dawn', 'Version 2', 'stable')
+    Wait-Text 'demo.free installation complete' | Out-Null
+    if ((Text-Dump) -like '*Update available: v2*') { throw 'Completed update left a stale update notice' }
+    Write-Host 'PASS completed update refreshes the topbar notice'
     Click-Button 'Rollback'
     Capture '07-rollback' @('Lanterns at Dawn', 'Version 1', 'stable')
     $readme = Join-Path $stateRoot 'library/demo.free/README.txt'

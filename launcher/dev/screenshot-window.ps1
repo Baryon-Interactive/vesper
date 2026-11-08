@@ -10,7 +10,7 @@ public class W {
   public struct RECT { public int L, T, R, B; }
 }
 "@
-$p = Get-Process | Where-Object { $_.MainWindowTitle -like "*$Title*" } | Select-Object -First 1
+$p = Get-Process | Where-Object { $_.MainWindowTitle -eq $Title } | Select-Object -First 1
 if (-not $p) { throw "window not found" }
 $h = $p.MainWindowHandle
 $r = New-Object W+RECT
@@ -22,4 +22,6 @@ $hdc = $g.GetHdc()
 $g.ReleaseHdc($hdc); [W]::SetForegroundWindow($h) | Out-Null; Start-Sleep -Milliseconds 600; $g.CopyFromScreen($r.L, $r.T, 0, 0, $bmp.Size); $hdc = $g.GetHdc()
 $g.ReleaseHdc($hdc)
 $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
+$g.Dispose()
+$bmp.Dispose()
 "saved $Out ${w}x${hgt} pid=$($p.Id)"

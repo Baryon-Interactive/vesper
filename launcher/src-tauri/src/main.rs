@@ -92,7 +92,7 @@ fn runtime_allowlist() -> Vec<Value> {
     launcher::runtime_allowlist()
 }
 #[tauri::command]
-fn verify_media(url: String, expected_blake3: String) -> Result<bool, String> {
+fn verify_media(url: String, expected_blake3: String) -> Result<Vec<u8>, String> {
     launcher::verify_media(&url, &expected_blake3).map_err(|e| e.to_string())
 }
 #[tauri::command]

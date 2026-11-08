@@ -1781,7 +1781,7 @@ fn index_snapshot(
     vesper_meta::verify_store_metadata(&targets.signed, &dir)?;
     // A full registry history distinguishes a hosted app's first aggregation
     // from deleted online metadata. Existing historical versions still win.
-    let hosted_initial = route.metadata_url.is_some() && {
+    let hosted_initial = route.metadata_url.is_some() && index.join(".git").exists() && {
         let output = std::process::Command::new("git")
             .arg("-C")
             .arg(index)

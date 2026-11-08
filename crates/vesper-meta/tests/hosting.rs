@@ -205,6 +205,23 @@ fn aggregate_unreachable_retains_old_data() {
     })
     .contains("404"));
 }
+
+#[test]
+fn aggregate_connection_failure_retains_old_data() {
+    let mock = Mock::new();
+    let key = KeyPair::generate();
+    let temp = tempfile::tempdir().unwrap();
+    let mut route = route(&mock, &key);
+    publish(&mock, &key, 2);
+    aggregate_app(temp.path(), "game", &route).unwrap();
+    let path = temp.path().join("apps/game/targets.json");
+    let old = fs::read(&path).unwrap();
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    route.metadata_url = Some(format!("http://{}/", closed.local_addr().unwrap()));
+    drop(closed);
+    assert!(aggregate_app(temp.path(), "game", &route).is_err());
+    assert_eq!(fs::read(path).unwrap(), old);
+}
 #[test]
 fn aggregate_rejects_oversized_metadata() {
     assert!(rejected_mutation(|mock, _| {
