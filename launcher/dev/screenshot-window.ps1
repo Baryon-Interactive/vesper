@@ -19,8 +19,9 @@ $w = $r.R - $r.L; $hgt = $r.B - $r.T
 $bmp = New-Object System.Drawing.Bitmap $w, $hgt
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $hdc = $g.GetHdc()
-$g.ReleaseHdc($hdc); [W]::SetForegroundWindow($h) | Out-Null; Start-Sleep -Milliseconds 600; $g.CopyFromScreen($r.L, $r.T, 0, 0, $bmp.Size); $hdc = $g.GetHdc()
+$printed = [W]::PrintWindow($h, $hdc, 2)
 $g.ReleaseHdc($hdc)
+if (-not $printed) { $g.Dispose(); $bmp.Dispose(); throw 'Window capture failed' }
 $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
 $g.Dispose()
 $bmp.Dispose()
