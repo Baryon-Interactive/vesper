@@ -94,8 +94,8 @@ For content downloads with multiple sources, the fetcher probes each source in
 parallel using a Range of up to 256 KiB (at most 1/128 of the sampled pack,
 rounded up) from a referenced pack and a three-second
 total timeout. Failed probes sort last without contributing failure counters.
-Transfers below 50 ms are treated as latency dominated. Measurements within
-10% are tied using the initial order. A single source sends
+Client setup is excluded from throughput timing. Measurements within 10% are
+tied using the initial order. A single source sends
 no probe. Probe bytes are additional traffic, are not reused, and are reported
 separately by `probe_bytes()` and stderr; overhead is at most 256 KiB per source
 for a conforming response. Chunk integrity checks still apply to all content.

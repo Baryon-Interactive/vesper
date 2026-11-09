@@ -402,6 +402,7 @@ mod tests {
                     thread::sleep(Duration::from_millis(2));
                     continue;
                 };
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();

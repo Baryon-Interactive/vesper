@@ -1271,7 +1271,7 @@ impl MultiSourceFetcher {
             let (tx, cancelled, traffic) =
                 (tx.clone(), cancelled.clone(), self.probe_bytes.clone());
             thread::spawn(move || {
-                let started = Instant::now();
+                let mut started = Instant::now();
                 let result = (|| -> Result<u64> {
                     let Source::Http(base) = &source.source else {
                         anyhow::bail!("local source does not require a probe");
@@ -1287,6 +1287,8 @@ impl MultiSourceFetcher {
                         .redirect(Policy::limited(5))
                         .timeout(Duration::from_secs(3))
                         .build()?;
+                    // Client/runtime setup is not source throughput.
+                    started = Instant::now();
                     let mut response = client
                         .get(url)
                         .header("X-Vesper-Probe", "1")
@@ -1317,22 +1319,18 @@ impl MultiSourceFetcher {
                     );
                     Ok(bytes)
                 })();
-                // Sub-50ms transfers are latency/timer dominated and treated as tied.
                 let elapsed = started.elapsed().as_secs_f64();
                 let bytes = result.unwrap_or(0) as f64;
                 let rate = bytes / elapsed.max(0.000001);
-                let score = bytes / elapsed.max(0.05);
-                let _ = tx.send((i, rate, score));
+                let _ = tx.send((i, rate));
             });
         }
         drop(tx);
         let mut results = vec![0.0; self.sources.len()];
-        let mut scores = results.clone();
         for _ in 0..self.sources.len() {
             match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                Ok((i, rate, score)) => {
+                Ok((i, rate)) => {
                     results[i] = rate;
-                    scores[i] = score;
                 }
                 Err(_) => break,
             }
@@ -1355,7 +1353,7 @@ impl MultiSourceFetcher {
         );
         let mut state = self.health.lock().unwrap();
         state.rates = results;
-        let rates = scores;
+        let rates = state.rates.clone();
         // Treat measurements within 10% as tied to avoid latency noise.
         let mut ranked = state.order.clone();
         ranked.sort_by(|a, b| rates[*b].total_cmp(&rates[*a]));

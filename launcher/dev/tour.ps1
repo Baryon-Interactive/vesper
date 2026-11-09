@@ -13,9 +13,16 @@ $gatewayServer = Start-Process -FilePath 'python' -ArgumentList @((Join-Path $PS
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 function Get-Root {
-  $process = Get-Process | Where-Object { $_.MainWindowTitle -eq 'Vesper' } | Select-Object -First 1
-  if (-not $process) { throw 'Vesper window not found' }
-  [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+  $deadline = [DateTime]::UtcNow.AddSeconds(10)
+  do {
+    $script:process.Refresh()
+    if ($script:process.HasExited) { throw "Vesper exited during the tour (exit code $($script:process.ExitCode))" }
+    if ($script:process.MainWindowHandle -ne [IntPtr]::Zero) {
+      return [System.Windows.Automation.AutomationElement]::FromHandle($script:process.MainWindowHandle)
+    }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "Vesper window was not available for process $($script:process.Id)"
 }
 function Get-Elements { (Get-Root).FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) }
 function Text-Dump { (Get-Elements | ForEach-Object { $_.Current.Name } | Where-Object { $_ } | Select-Object -Unique) -join ' | ' }

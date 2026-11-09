@@ -2033,7 +2033,8 @@ mod tests {
         );
         let pack_id = output.manifest.packs[0].pack_id.clone();
         let pack = fs::read(build.path().join("packs").join(&pack_id)).unwrap();
-        let fast = RangeServer::new(pack_id, pack, Duration::ZERO);
+        // The primary wins the probe, then stalls its first content request.
+        let fast = RangeServer::new(pack_id, pack, Duration::from_millis(50));
         let target = tempfile::tempdir().unwrap();
         let fetcher = vesper_fetch::MultiSourceFetcher::new(vec![
             vesper_fetch::SourceSpec::new(vesper_fetch::Source::Http(slow.base.clone())),
@@ -2184,8 +2185,13 @@ mod tests {
         Installer::new(target.path())
             .install(&output.manifest, &fetcher)
             .unwrap();
-        let required = primary.bytes_served();
-        assert!(backup.bytes_served() <= required / 10 + 1);
+        // Either equal-speed endpoint can win a measured probe. Preserve the
+        // one-source byte budget independently of its position in the list.
+        let first = primary.bytes_served();
+        let second = backup.bytes_served();
+        assert!(first.min(second) <= first.max(second) / 10 + 1);
+        let required = manifest_pack_size(&_build, &output.manifest);
+        assert!(first + second <= (required as f64 * 1.02).ceil() as u64);
     }
 
     #[test]

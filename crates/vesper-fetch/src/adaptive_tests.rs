@@ -45,6 +45,7 @@ impl Server {
                     broken.clone(),
                 );
                 children.push(thread::spawn(move || {
+                    socket.set_nonblocking(false).unwrap();
                     socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                     let mut data = Vec::new(); let mut buf = [0u8;4096];
                     while !data.windows(4).any(|w| w == b"\r\n\r\n") {
