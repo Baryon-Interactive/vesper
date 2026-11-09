@@ -53,8 +53,8 @@ $onlinePublic = Invoke-Vesper @('index','online-pubkey') | Where-Object { $_ -ma
 if (-not $onlinePublic) { throw 'Missing online public key' }
 Invoke-Vesper @('index','init','--index',$index,'--root-keys','1','--threshold','1','--out-keys',$keys,'--online-pubkey',$onlinePublic) | Out-Host
 $apps = @(
-  @{ Id='demo.free'; Title='Lanterns at Dawn'; Summary='A free verified demo build.'; Paid=$false; Version='1'; Release='1'; Folder='free'; Price='Free'; Tag='demo' },
-  @{ Id='demo.paid'; Title='Mossbound'; Summary='A paid encrypted demo build.'; Paid=$true; Version='1'; Release='1'; Folder='paid'; Price='$4.99'; Tag='adventure' }
+  @{ Id='demo.free'; Title='Lanterns at Dawn'; Summary='A free verified demo build.'; Paid=$false; Version='1'; Release='free-1'; Folder='free'; Price='Free'; Tag='demo' },
+  @{ Id='demo.paid'; Title='Mossbound'; Summary='A paid encrypted demo build.'; Paid=$true; Version='1'; Release='paid-1'; Folder='paid'; Price='$4.99'; Tag='adventure' }
 )
 $rootKey = Join-Path $keys 'root-0.key'
 foreach ($app in $apps) {

@@ -58,6 +58,8 @@ impl Server {
                     thread::sleep(Duration::from_millis(if number == 0 && first_delay_ms > 0 { first_delay_ms } else { lag.load(Ordering::Acquire) }));
                     let header = format!("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",pack.len(),end-start+1);
                     if socket.write_all(header.as_bytes()).is_ok() && socket.write_all(&pack[start..=end]).is_ok() { traffic.fetch_add((end-start+1) as u64, Ordering::AcqRel); }
+                    let _ = socket.flush();
+                    let _ = socket.shutdown(std::net::Shutdown::Write);
                 }));
             }
             for child in children {
