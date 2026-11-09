@@ -498,11 +498,16 @@ exec "$REAL_GIT" "$@"
         );
         success(cli(&worker, "verify", &[]));
         let head = Command::new("git")
-            .arg("-C")
+            .arg("--git-dir")
             .arg(&origin)
             .args(["rev-parse", "main"])
             .output()
             .unwrap();
+        assert!(
+            head.status.success(),
+            "read mock origin HEAD: {}",
+            String::from_utf8_lossy(&head.stderr)
+        );
         assert_eq!(
             fs::read_to_string(output_file).unwrap().trim(),
             format!("sha={}", String::from_utf8(head.stdout).unwrap().trim())
