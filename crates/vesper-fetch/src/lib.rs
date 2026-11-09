@@ -133,6 +133,34 @@ fn plan_ranges_for_manifest(manifest: &Manifest, ids: &[ChunkId]) -> Result<Vec<
     Ok(plans)
 }
 
+/// Give the useful-range sampler two early opportunities before large merged
+/// requests consume the queue. Single-source downloads retain full coalescing.
+fn early_sampling_ranges(mut plans: Vec<PlannedRange>) -> Vec<PlannedRange> {
+    let original_count = plans.len();
+    let Some(first) = plans.first_mut() else {
+        return plans;
+    };
+    let count = first.chunks.len().min(40);
+    let mut early = Vec::with_capacity(count + original_count);
+    // Each frame is requested exactly once; gaps need no content download.
+    for chunk in first.chunks.drain(..count) {
+        early.push(PlannedRange {
+            pack_id: first.pack_id.clone(),
+            release_tag: first.release_tag.clone(),
+            start: chunk.1,
+            end: chunk.2,
+            chunks: vec![chunk],
+        });
+    }
+    if let Some(chunk) = first.chunks.first() {
+        first.start = chunk.1;
+    } else {
+        plans.remove(0);
+    }
+    early.extend(plans);
+    early
+}
+
 pub fn merge_ranges(mut ranges: Vec<RangeSpan>) -> Vec<RangeSpan> {
     ranges.sort_by_key(|range| range.start);
     let mut merged: Vec<RangeSpan> = Vec::new();
@@ -1196,39 +1224,66 @@ struct SourceHealth {
 }
 
 impl SourceHealth {
-    fn observe(&mut self, index: usize, rate: f64) {
-        self.rates[index] = if self.measured[index].is_none() {
+    /// Pure state transitions: callers supply both measurements and monotonic time.
+    fn rank_probes(&mut self, rates: Vec<f64>) {
+        self.rates = rates;
+        let initial = self.order.clone();
+        self.order
+            .sort_by(|a, b| self.rates[*b].total_cmp(&self.rates[*a]));
+        let mut start = 0;
+        while start < self.order.len() {
+            let mut end = start + 1;
+            while end < self.order.len()
+                && self.rates[self.order[end]] >= self.rates[self.order[start]] * 0.9
+            {
+                end += 1;
+            }
+            self.order[start..end].sort_by_key(|i| initial.iter().position(|j| i == j));
+            start = end;
+        }
+    }
+
+    fn fresh(&self, index: usize, now: Instant) -> bool {
+        self.measured[index]
+            .is_some_and(|at| now.saturating_duration_since(at) <= Duration::from_secs(30))
+    }
+
+    fn observe(&mut self, index: usize, rate: f64, now: Instant) {
+        self.rates[index] = if !self.fresh(index, now) {
             rate
         } else {
             self.rates[index] * 0.5 + rate * 0.5
         };
-        self.measured[index] = Some(Instant::now());
-        if self.cooldown > 0 {
-            self.cooldown -= 1;
-            return;
-        }
+        self.measured[index] = Some(now);
+        let cooling = self.cooldown > 0;
+        self.cooldown = self.cooldown.saturating_sub(1);
         let primary = self.order[0];
         let candidate = self
             .order
             .iter()
             .copied()
-            .filter(|i| {
-                !self.demoted[*i]
-                    && self.measured[*i].is_some_and(|at| at.elapsed() <= Duration::from_secs(30))
-            })
+            .filter(|i| !self.demoted[*i] && self.fresh(*i, now))
             .max_by(|a, b| self.rates[*a].total_cmp(&self.rates[*b]))
             .unwrap_or(primary);
         if candidate != primary
-            && self.measured[primary].is_some_and(|at| at.elapsed() <= Duration::from_secs(30))
+            && self.fresh(primary, now)
             && self.rates[candidate] > self.rates[primary] * 1.5
         {
+            // A decisive content measurement corrects a noisy startup probe at
+            // the first sample, even during cooldown. Close rates retain hysteresis.
+            let decisive = self.rates[candidate] >= self.rates[primary] * 5.0;
+            if cooling && !decisive {
+                self.votes = 0;
+                self.contender = None;
+                return;
+            }
             if self.contender == Some(candidate) {
                 self.votes += 1;
             } else {
                 self.contender = Some(candidate);
                 self.votes = 1;
             }
-            if self.votes >= 3 {
+            if decisive || self.votes >= 3 {
                 self.order.retain(|i| *i != candidate);
                 self.order.insert(0, candidate);
                 self.votes = 0;
@@ -1424,21 +1479,7 @@ impl MultiSourceFetcher {
             self.probe_bytes()
         );
         let mut state = self.health.lock().unwrap();
-        state.rates = results;
-        let rates = state.rates.clone();
-        // Treat measurements within 10% as tied to avoid latency noise.
-        let mut ranked = state.order.clone();
-        ranked.sort_by(|a, b| rates[*b].total_cmp(&rates[*a]));
-        let mut start = 0;
-        while start < ranked.len() {
-            let mut end = start + 1;
-            while end < ranked.len() && rates[ranked[end]] >= rates[ranked[start]] * 0.9 {
-                end += 1;
-            }
-            ranked[start..end].sort_unstable();
-            start = end;
-        }
-        state.order = ranked;
+        state.rank_probes(results);
         let order = state.order.clone();
         drop(state);
         self.report_ranking(&order);
@@ -1684,6 +1725,11 @@ impl MultiSourceFetcher {
             }
         }
         let plans = plan_ranges_for_manifest(manifest, &missing)?;
+        let plans = if self.sources.len() > 1 {
+            early_sampling_ranges(plans)
+        } else {
+            plans
+        };
         let total_plans = plans.len();
         let queue = Arc::new(Mutex::new(
             plans.into_iter().enumerate().collect::<VecDeque<_>>(),
@@ -2013,13 +2059,14 @@ impl MultiSourceFetcher {
                         index,
                         attempt.transferred_bytes as f64
                             / attempt.elapsed.as_secs_f64().max(0.000001),
+                        Instant::now(),
                     );
                     let switched = previous != state.order[0];
                     let order = state.order.clone();
                     drop(state);
                     if switched {
                         eprintln!(
-                            "source switch {} -> {} (fresh single-request EWMA throughput, 1.5x, 3 votes, 8 completion cooldown)",
+                            "source switch {} -> {} (fresh single-request EWMA: >1.5x/3 votes/8 completion cooldown; >=5x/1 vote bypasses cooldown)",
                             self.ids[previous], self.ids[order[0]]
                         );
                         self.report_ranking(&order);

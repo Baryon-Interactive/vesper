@@ -2165,10 +2165,13 @@ mod tests {
         Installer::new(target.path())
             .install(&output.manifest, &fetcher)
             .unwrap();
+        let requests = primary.direct_requests();
+        let content_requests = requests.iter().filter(|request| !request.probe).count();
+        let probe_requests = requests.iter().filter(|request| request.probe).count();
+        assert_eq!(probe_requests, 1);
         assert!(
-            primary.direct_requests().len() <= 3,
-            "demoted primary received {} requests",
-            primary.direct_requests().len()
+            content_requests <= 3,
+            "demoted primary received {content_requests} content requests"
         );
         assert!(!backup.direct_requests().is_empty());
     }

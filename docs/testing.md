@@ -44,6 +44,20 @@ example live catalogue; shell tests require Git Bash and report a skip if absent
 The signing-conflict test uses local Git repositories and the compiled CLI.
 Gateway tests use a local Miniflare D1 database with migrations and generated keys.
 
+Source-selection decisions have deterministic state-machine tests with injected
+rates and monotonic time in `vesper-fetch::adaptive_tests`. They cover probe
+ties/failures, a misranked probe corrected by the first fresh 5x sample, cooldown,
+close-rate stability, stale evidence, and the 5% sampling reservation bound.
+The local HTTP test deliberately delays the fast source's probe for two seconds
+while delaying every slow-source content request for one second; it verifies
+early correction and at least 80% fast-source bytes over a 32 MiB installation.
+Installer tests separately verify same-source stalled-connection hedging, loser
+cancellation across repeated server writes, byte limits and zero healthy hedges.
+Windows stability checks repeat `cargo test --workspace --no-fail-fast` ten times,
+including at least three with concurrent CPU pressure. Keep each run's exit code,
+test counts and load measurements. Linux repeats of the related tests belong to
+the separate platform acceptance run.
+
 ## Desktop demo and native tour
 
 See [launcher instructions](../launcher/README.md) for manual services and UI.

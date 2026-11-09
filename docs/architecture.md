@@ -108,13 +108,24 @@ startup probe bytes are separate. Single-source downloads neither probe nor
 sample. A large range waits until sufficient budget accrues; no measurement is
 used for switching when it becomes stale. Available backups receive periodic
 ranges as the download proceeds, without requiring a slow-tail hedge.
+Multi-source materialization dispatches the first merged range's first 40
+frames separately before returning to the usual 16 MiB coalescing limit. This
+gives the byte-budgeted sampler early opportunities on small downloads; each
+frame is still fetched once and the 5% reservation limit applies unchanged.
 
 Successful content ranges, including hedges and samples, update per-source EWMA
 with alpha 0.5 using bytes per elapsed second of one request, never aggregate
 worker throughput. Probe rates establish only the initial ranking; the first
 content observation replaces that rate. Switching requires content observations
 from both sources within 30 seconds, a candidate exceeding the primary by 1.5x
-for three observations, and an eight-completion cooldown. Failover to a
+for three observations, and an eight-completion cooldown. A candidate at least
+5x faster requires one observation and bypasses that cooldown, allowing the
+first fresh backup sample to correct a noisy probe ranking. The same rule
+applies after startup when a source slows sharply. Close speeds retain the
+ordinary hysteresis. Stale observations reset their EWMA on the next sample;
+probe-only or stale rates cannot supply switch votes. Ranking, sampling and
+switch decisions are state transitions with injected rates and monotonic time.
+Failover to a
 successful backup also changes the primary. Probe outcomes, sampling bytes,
 primary choices and switches are logged to stderr and ranking changes refresh
 the app cache. Consecutive-failure demotion, slow-tail hedging and loser

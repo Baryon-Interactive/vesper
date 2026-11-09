@@ -126,6 +126,15 @@ HEAD for asset checks, and never downloads pack/manifest bodies. Retained remote
 manifest pack inventories are verified during actual publication.
 See [R2 setup and pricing](publishing.md#optional-r2-mirror).
 
+Content source selection uses parallel startup probes and useful backup ranges
+within a 5% sampling budget. Fresh single-request EWMA rates drive switches:
+over 1.5x for three observations with eight completions of cooldown, or at least
+5x for one observation bypassing cooldown. Both sources need content samples
+at most 30 seconds old. Multi-source installs dispatch the first 40 frames
+separately to enable early correction of noisy probes. A single source skips
+probes and samples but can hedge a stalled range on a new connection; healthy
+progress suppresses that hedge. See [source selection](architecture.md#download-source-selection).
+
 ## Index maintenance
 
 | Subcommand under `index` | Purpose and key arguments |

@@ -91,9 +91,13 @@ impl Drop for Server {
 }
 
 fn fixture() -> (tempfile::TempDir, vesper_format::BuildOutput, Vec<u8>) {
+    fixture_with_size(4 * 1024 * 1024)
+}
+
+fn fixture_with_size(size: usize) -> (tempfile::TempDir, vesper_format::BuildOutput, Vec<u8>) {
     let input = tempfile::tempdir().unwrap();
     let mut x = 17u64;
-    let data: Vec<u8> = (0..4 * 1024 * 1024)
+    let data: Vec<u8> = (0..size)
         .map(|_| {
             x ^= x << 13;
             x ^= x >> 7;
@@ -129,9 +133,10 @@ fn fixture() -> (tempfile::TempDir, vesper_format::BuildOutput, Vec<u8>) {
 
 #[test]
 fn second_faster_source_provides_at_least_eighty_percent() {
-    let (_build, output, pack) = fixture();
-    let slow = Server::new(pack.clone(), 100, 0);
-    let fast = Server::new(pack, 2, 0);
+    let (_build, output, pack) = fixture_with_size(32 * 1024 * 1024);
+    let slow = Server::new(pack.clone(), 1000, 0);
+    // Distort the fast source's probe; useful early samples must correct it.
+    let fast = Server::new(pack, 0, 2000);
     let fetcher = MultiSourceFetcher::new(vec![slow.spec("slow"), fast.spec("fast")]).unwrap();
     let dest = tempfile::tempdir().unwrap();
     fetcher
@@ -145,13 +150,18 @@ fn second_faster_source_provides_at_least_eighty_percent() {
         "fast={fast_bytes} total={total}"
     );
     assert!(fetcher.probe_bytes() > 0);
+    assert!(fetcher.sampling_bytes() > 0);
+    let state = fetcher.health.lock().unwrap();
+    assert!(state.sampled_bytes <= state.scheduled_bytes / 20);
+    assert_eq!(fetcher.hedged_bytes(), 0);
+    assert!(total <= output.manifest.packs[0].size + fetcher.probe_bytes());
 }
 
 #[test]
 fn slowing_primary_switches_without_oscillation() {
     let (_build, output, pack) = fixture();
     let primary = Server::new(pack.clone(), 0, 0);
-    let backup = Server::new(pack, 80, 0);
+    let backup = Server::new(pack, 0, 2000);
     let fetcher =
         MultiSourceFetcher::new(vec![primary.spec("primary"), backup.spec("backup")]).unwrap();
     let chunks = &output.manifest.files[0].chunks;
@@ -170,12 +180,6 @@ fn slowing_primary_switches_without_oscillation() {
     let state = fetcher.health.lock().unwrap();
     assert!(state.sampled_bytes > 0 && state.sampled_bytes <= state.scheduled_bytes / 20);
     drop(state);
-    let mut state = SourceHealth::new(2);
-    state.rates = vec![100.0, 120.0];
-    for i in 0..30 {
-        state.observe(i % 2, if i % 2 == 0 { 100.0 } else { 120.0 });
-    }
-    assert_eq!(state.order[0], 0);
 }
 
 #[test]
@@ -204,15 +208,18 @@ fn timed_out_probe_remains_a_working_backup_and_single_source_skips_probe() {
 #[test]
 fn stale_or_probe_only_rates_cannot_trigger_switch_and_sampling_is_bounded() {
     let mut state = SourceHealth::new(3);
+    let now = Instant::now();
     state.rates = vec![1.0, 1_000_000.0, 2_000_000.0];
     for _ in 0..10 {
-        state.observe(0, 1.0);
+        state.observe(0, 1.0, now);
     }
     assert_eq!(state.order[0], 0);
-    state.observe(1, 100.0);
-    state.measured[1] = Some(Instant::now() - Duration::from_secs(31));
+    // Neither a stale primary nor a stale backup can supply switch evidence.
+    state.measured[0] = Some(now - Duration::from_secs(31));
+    state.observe(1, 100.0, now);
+    assert_eq!(state.order[0], 0);
     for _ in 0..10 {
-        state.observe(0, 1.0);
+        state.observe(0, 1.0, now + Duration::from_secs(31));
     }
     assert_eq!(state.order[0], 0);
     let mut seen = [false; 3];
@@ -223,4 +230,112 @@ fn stale_or_probe_only_rates_cannot_trigger_switch_and_sampling_is_bounded() {
         assert!(state.sampled_bytes <= state.scheduled_bytes / 20);
     }
     assert!(seen[1] && seen[2]);
+}
+
+#[test]
+fn probe_ranking_uses_initial_order_for_ties_and_failed_probes_sort_last() {
+    let mut state = SourceHealth::new(4);
+    state.order = vec![2, 1, 0, 3];
+    state.rank_probes(vec![0.0, 100.0, 95.0, 500.0]);
+    assert_eq!(state.order, vec![3, 2, 1, 0]);
+    assert!(state.measured.iter().all(Option::is_none));
+}
+
+#[test]
+fn noisy_probe_is_corrected_by_first_fresh_sample_even_during_cooldown() {
+    let now = Instant::now();
+    let mut state = SourceHealth::new(2);
+    state.rank_probes(vec![1000.0, 1.0]);
+    state.cooldown = 8;
+    state.observe(0, 100.0, now);
+    // Probe-only backup evidence cannot switch, regardless of the probe rate.
+    assert_eq!(state.order[0], 0);
+    for _ in 0..19 {
+        assert_eq!(state.sample_source(1024), None);
+    }
+    assert_eq!(state.sample_source(1024), Some(1));
+    state.observe(1, 500.0, now + Duration::from_secs(1));
+    assert_eq!(state.order[0], 1);
+    assert_eq!(state.cooldown, 8);
+    assert_eq!(state.sampled_bytes, state.scheduled_bytes / 20);
+}
+
+#[test]
+fn close_content_rates_do_not_oscillate() {
+    let now = Instant::now();
+    let mut state = SourceHealth::new(2);
+    state.rank_probes(vec![101.0, 100.0]);
+    for n in 0..100 {
+        let time = now + Duration::from_millis(n * 100);
+        state.observe(0, if n % 2 == 0 { 100.0 } else { 120.0 }, time);
+        state.observe(1, if n % 2 == 0 { 120.0 } else { 100.0 }, time);
+        assert_eq!(state.order[0], 0);
+    }
+}
+
+#[test]
+fn ordinary_switch_requires_three_votes_and_eight_completion_cooldown() {
+    let now = Instant::now();
+    let mut state = SourceHealth::new(2);
+    state.observe(0, 100.0, now);
+    state.observe(1, 200.0, now);
+    assert_eq!(state.order[0], 0);
+    state.observe(1, 200.0, now);
+    assert_eq!(state.order[0], 0);
+    state.observe(1, 200.0, now);
+    assert_eq!(state.order[0], 1);
+    assert_eq!(state.cooldown, 8);
+    for _ in 0..8 {
+        state.observe(0, 400.0, now);
+        assert_eq!(state.order[0], 1);
+    }
+    for _ in 0..2 {
+        state.observe(0, 400.0, now);
+        assert_eq!(state.order[0], 1);
+    }
+    state.observe(0, 400.0, now);
+    assert_eq!(state.order[0], 0);
+}
+
+#[test]
+fn stale_measurement_resets_votes_and_ewma_before_new_evidence() {
+    let now = Instant::now();
+    let mut state = SourceHealth::new(2);
+    state.observe(0, 100.0, now);
+    state.observe(1, 200.0, now);
+    assert_eq!(state.votes, 1);
+    let later = now + Duration::from_secs(31);
+    state.observe(0, 100.0, later);
+    assert_eq!(state.votes, 0);
+    state.observe(1, 120.0, later);
+    assert_eq!(state.rates[1], 120.0);
+    assert_eq!(state.order[0], 0);
+}
+
+#[test]
+fn early_sampling_preserves_every_frame_without_overlap() {
+    let (_build, output, _) = fixture();
+    let ids: Vec<_> = output.manifest.files[0]
+        .chunks
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    let plans = plan_ranges_for_manifest(&output.manifest, &ids).unwrap();
+    let original: Vec<_> = plans
+        .iter()
+        .flat_map(|p| p.chunks.iter().copied())
+        .collect();
+    let split = early_sampling_ranges(plans);
+    let actual: Vec<_> = split
+        .iter()
+        .flat_map(|p| p.chunks.iter().copied())
+        .collect();
+    assert_eq!(original, actual);
+    assert!(split.len() > 20);
+    for pair in split.windows(2) {
+        if pair[0].pack_id == pair[1].pack_id {
+            assert!(pair[0].end < pair[1].start);
+        }
+    }
+    assert!(early_sampling_ranges(Vec::new()).is_empty());
 }

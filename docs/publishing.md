@@ -64,6 +64,14 @@ registered base directory. No Pages setup is needed for Release hosting.
 
 ## Optional R2 mirror
 
+Clients choose between GitHub and enabled mirrors using probes followed by
+fresh content throughput. Useful backup sampling is limited to 5% of scheduled
+bytes. Early small ranges allow a noisy initial ranking to be corrected:
+a fresh source at least 5x faster switches in one observation, bypassing the
+normal eight-completion cooldown; ordinary switches require over 1.5x for three
+observations. Both measurements must be at most 30 seconds old. See
+[download source selection](architecture.md#download-source-selection).
+
 GitHub Releases is the default, with zero hosting configuration. An optional
 Cloudflare R2 mirror suits large games or high download volumes. Standard R2
 storage includes 10 GB-month free each month, then costs $0.015/GB-month. Class A
