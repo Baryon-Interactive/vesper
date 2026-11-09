@@ -42,6 +42,21 @@ struct InFlightRange {
     finished: bool,
     plan: PlannedRange,
     cancel: Arc<AtomicBool>,
+    progress: Arc<RangeProgress>,
+}
+
+struct RangeProgress {
+    received: AtomicU64,
+    source: AtomicUsize,
+}
+
+impl Default for RangeProgress {
+    fn default() -> Self {
+        Self {
+            received: AtomicU64::new(0),
+            source: AtomicUsize::new(usize::MAX),
+        }
+    }
 }
 
 struct FetchAttempt {
@@ -591,6 +606,7 @@ impl Fetcher {
         plan: &PlannedRange,
         cancel: &Arc<AtomicBool>,
         persist: bool,
+        progress: Option<&RangeProgress>,
     ) -> Result<FetchAttempt> {
         let started = Instant::now();
         let bytes = self.read_range_span_with_cancel(
@@ -599,6 +615,7 @@ impl Fetcher {
             plan.start,
             plan.end,
             cancel,
+            progress,
         )?;
         if cancel.load(Ordering::Acquire) {
             anyhow::bail!("range request cancelled after another attempt succeeded");
@@ -772,6 +789,7 @@ impl Fetcher {
             start,
             end,
             &Arc::new(AtomicBool::new(false)),
+            None,
         )
     }
 
@@ -782,6 +800,7 @@ impl Fetcher {
         start: u64,
         end: u64,
         cancel: &Arc<AtomicBool>,
+        progress: Option<&RangeProgress>,
     ) -> Result<Vec<u8>> {
         match &self.source {
             Source::Local(root) => {
@@ -794,6 +813,11 @@ impl Fetcher {
                 file.seek(SeekFrom::Start(start))?;
                 let mut bytes = vec![0u8; end.saturating_sub(start).saturating_add(1) as usize];
                 file.read_exact(&mut bytes)?;
+                if let Some(progress) = progress {
+                    progress
+                        .received
+                        .store(bytes.len() as u64, Ordering::Release);
+                }
                 if cancel.load(Ordering::Acquire) {
                     anyhow::bail!("range request cancelled");
                 }
@@ -906,6 +930,11 @@ impl Fetcher {
                             break;
                         }
                         bytes.extend_from_slice(&buffer[..read]);
+                        if let Some(progress) = progress {
+                            progress
+                                .received
+                                .store(bytes.len() as u64, Ordering::Release);
+                        }
                         if bytes.len() > expected {
                             anyhow::bail!("oversized Range response: {} bytes", bytes.len());
                         }
@@ -1568,6 +1597,7 @@ impl MultiSourceFetcher {
             false,
             &Arc::new(AtomicBool::new(false)),
             &self.health,
+            &Arc::new(RangeProgress::default()),
         )?;
         let bytes = result
             .values
@@ -1681,31 +1711,71 @@ impl MultiSourceFetcher {
                 let health = Arc::clone(&health);
                 let tx = tx.clone();
                 scope.spawn(move || loop {
-                    let task = queue
-                        .lock()
-                        .unwrap()
-                        .pop_front()
-                        .map(|(id, plan)| (id, plan, false, Arc::new(AtomicBool::new(false))));
+                    let task = queue.lock().unwrap().pop_front().map(|(id, plan)| {
+                        (
+                            id,
+                            plan,
+                            false,
+                            Arc::new(AtomicBool::new(false)),
+                            Arc::new(RangeProgress::default()),
+                        )
+                    });
                     let task = if task.is_some() {
                         task
                     } else {
-                        let candidate = if active.load(Ordering::Acquire) < workers {
+                        let alternatives = health
+                            .lock()
+                            .unwrap()
+                            .demoted
+                            .iter()
+                            .filter(|d| !**d)
+                            .count();
+                        let candidate = if alternatives > 1
+                            && active.load(Ordering::Acquire) < workers
+                        {
                             let mut state = inflight.lock().unwrap();
                             let median = median_throughput(&throughputs.lock().unwrap());
                             median.and_then(|median| {
                                 state
                                     .iter_mut()
-                                    .filter(|(_, entry)| !entry.hedged && !entry.finished)
+                                    .filter(|(_, entry)| {
+                                        !entry.hedged
+                                            && !entry.finished
+                                            && entry.progress.source.load(Ordering::Acquire)
+                                                != usize::MAX
+                                    })
                                     .filter(|(_, entry)| {
                                         hedge_threshold(entry.plan.start, entry.plan.end, median)
                                             .is_some_and(|threshold| {
+                                                let received =
+                                                    entry.progress.received.load(Ordering::Acquire);
+                                                let length = entry.plan.end - entry.plan.start + 1;
                                                 entry.started.elapsed() >= threshold
+                                                    && received < length
+                                                    && received as f64
+                                                        / entry
+                                                            .started
+                                                            .elapsed()
+                                                            .as_secs_f64()
+                                                            .max(0.000001)
+                                                        < median as f64 / 10.0
                                             })
                                     })
                                     .min_by_key(|(_, entry)| entry.started)
                                     .map(|(id, entry)| {
                                         entry.hedged = true;
-                                        (*id, entry.plan.clone(), true, Arc::clone(&entry.cancel))
+                                        let progress = Arc::new(RangeProgress::default());
+                                        progress.source.store(
+                                            entry.progress.source.load(Ordering::Acquire),
+                                            Ordering::Release,
+                                        );
+                                        (
+                                            *id,
+                                            entry.plan.clone(),
+                                            true,
+                                            Arc::clone(&entry.cancel),
+                                            progress,
+                                        )
                                     })
                             })
                         } else {
@@ -1716,7 +1786,7 @@ impl MultiSourceFetcher {
                         }
                         candidate
                     };
-                    let Some((id, plan, hedge, cancel)) = task else {
+                    let Some((id, plan, hedge, cancel, progress)) = task else {
                         if active.load(Ordering::Acquire) == 0 {
                             break;
                         }
@@ -1731,12 +1801,14 @@ impl MultiSourceFetcher {
                                 finished: false,
                                 plan: plan.clone(),
                                 cancel: Arc::clone(&cancel),
+                                progress: progress.clone(),
                             },
                         );
                     }
                     active.fetch_add(1, Ordering::AcqRel);
-                    let result =
-                        self.fetch_plan_from_sources(manifest, &plan, hedge, &cancel, &health);
+                    let result = self.fetch_plan_from_sources(
+                        manifest, &plan, hedge, &cancel, &health, &progress,
+                    );
                     active.fetch_sub(1, Ordering::AcqRel);
                     if !hedge {
                         if let Some(entry) = inflight.lock().unwrap().get_mut(&id) {
@@ -1853,9 +1925,10 @@ impl MultiSourceFetcher {
         hedge: bool,
         cancel: &Arc<AtomicBool>,
         health: &Arc<Mutex<SourceHealth>>,
+        progress: &Arc<RangeProgress>,
     ) -> Result<FetchAttempt> {
         let mut errors = Vec::new();
-        let mut order = {
+        let order = {
             let mut state = health.lock().unwrap();
             let sample = if !hedge && self.sources.len() > 1 {
                 state.sample_source(plan.end - plan.start + 1)
@@ -1866,7 +1939,10 @@ impl MultiSourceFetcher {
                 .order
                 .iter()
                 .copied()
-                .filter(|index| !state.demoted[*index])
+                .filter(|index| {
+                    !state.demoted[*index]
+                        && (!hedge || *index != progress.source.load(Ordering::Acquire))
+                })
                 .collect::<Vec<_>>();
             if let Some(index) = sample {
                 order.retain(|i| *i != index);
@@ -1876,9 +1952,6 @@ impl MultiSourceFetcher {
             }
             order
         };
-        if hedge && order.len() > 1 {
-            order.rotate_left(1);
-        }
         for index in order {
             if cancel.load(Ordering::Acquire) {
                 anyhow::bail!("range request cancelled after another attempt succeeded");
@@ -1912,12 +1985,15 @@ impl MultiSourceFetcher {
             if !reserved {
                 continue;
             }
+            progress.source.store(index, Ordering::Release);
+            progress.received.store(0, Ordering::Release);
             match run_fetch_attempt(
                 Arc::clone(&self.sources[index]),
                 manifest,
                 plan,
                 hedge,
                 cancel,
+                progress.clone(),
             ) {
                 Ok(mut attempt) => {
                     let mut state = health.lock().unwrap();
@@ -1995,9 +2071,10 @@ fn run_fetch_attempt(
     plan: &PlannedRange,
     hedge: bool,
     cancel: &Arc<AtomicBool>,
+    progress: Arc<RangeProgress>,
 ) -> Result<FetchAttempt> {
     if matches!(fetcher.source, Source::Local(_)) {
-        return fetcher.fetch_plan_with_cancel(manifest, plan, cancel, !hedge);
+        return fetcher.fetch_plan_with_cancel(manifest, plan, cancel, !hedge, Some(&progress));
     }
     let manifest = manifest.clone();
     let plan = plan.clone();
@@ -2005,7 +2082,13 @@ fn run_fetch_attempt(
     let worker_cancel = Arc::clone(&cancel);
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let _ = tx.send(fetcher.fetch_plan_with_cancel(&manifest, &plan, &worker_cancel, !hedge));
+        let _ = tx.send(fetcher.fetch_plan_with_cancel(
+            &manifest,
+            &plan,
+            &worker_cancel,
+            !hedge,
+            Some(&progress),
+        ));
     });
     loop {
         if cancel.load(Ordering::Acquire) {
