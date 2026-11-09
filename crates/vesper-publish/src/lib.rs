@@ -1,5 +1,7 @@
 //! GitHub Releases publisher for developer-owned pack repositories.
 
+pub mod r2;
+
 use anyhow::{Context, Result};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{
@@ -64,6 +66,33 @@ pub fn token_from_env_or_gh() -> Result<String> {
 }
 
 impl GitHubPublisher {
+    /// Download an immutable pack without forwarding publishing credentials.
+    pub fn download_pack(
+        &self,
+        owner: &str,
+        repo: &str,
+        tag: &str,
+        pack: &vesper_format::PackEntry,
+    ) -> Result<Vec<u8>> {
+        let release = self
+            .get_release(owner, repo, tag)?
+            .context("pack release is missing")?;
+        let asset = self
+            .list_assets(&release)?
+            .into_iter()
+            .find(|a| a.name == pack.pack_id)
+            .context("pack asset is missing")?;
+        let response = self
+            .client
+            .get(&asset.browser_download_url)
+            .header(RANGE, format!("bytes=0-{}", pack.size.saturating_sub(1)))
+            .send()?
+            .error_for_status()?;
+        let bytes = response.bytes()?.to_vec();
+        r2::verify_pack(pack, &bytes)?;
+        Ok(bytes)
+    }
+
     pub fn new(token: impl Into<String>) -> Result<Self> {
         let token = token.into();
         if token.trim().is_empty() {

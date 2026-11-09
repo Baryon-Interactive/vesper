@@ -66,3 +66,24 @@ full Git history. Registered hosted apps initialize online roles on first
 aggregation with full history; new repository-hosted apps require maintainer
 `--initialize`. Re-publishing a retained earlier build selects it with a higher
 targets version; do not decrement signed targets to roll back game content.
+
+## Optional R2 mirror
+
+GitHub Releases remains the default. For large builds or high download volumes,
+configure `[r2]` in the current `vesper.toml` with `bucket`, `account_id` (or
+`endpoint`), `prefix` and `public_base`. Matching `publish` flags are
+`--r2-bucket`, `--r2-account-id`, `--r2-endpoint`, `--r2-prefix` and
+`--r2-public-base`; each CLI value overrides its config field. Use environment
+variables `VESPER_R2_ACCESS_KEY_ID` and `VESPER_R2_SECRET_ACCESS_KEY` exclusively
+for credentials. Never read or print their values or save them to configuration.
+
+The public base includes the prefix path and requires HTTPS. Production public
+access uses a custom domain; `r2.dev` is rate limited. R2 requires a payment
+method. Consult [setup and pricing](../../docs/publishing.md#optional-r2-mirror).
+The mirror must include the manifest and every pack in its original release
+layout. Missing local packs are recovered from GitHub and length/hash checked.
+Any incomplete mirror fails before targets change. HEAD skips same-size objects;
+`--dry-run` prints read-only upload/skip plans. Both metadata hosting modes work.
+Record both signed sources, HEAD results and recovery failures in release reports.
+Clients select enabled sources by throughput with cached initial rankings and
+manifest fallback; a mirror does not replace signed content verification.

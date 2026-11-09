@@ -17,7 +17,67 @@ use vesper_meta::{
     AppSource, AppTargetsSigned, KeyPair, RoleSpec, RootSigned, RoutesSigned, Signed,
     SnapshotSigned, TargetsSigned, TimestampSigned,
 };
+use vesper_publish::r2::{R2Config, R2Publisher};
 use vesper_publish::{token_from_env_or_gh, GitHubPublisher};
+
+#[derive(clap::Args, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct R2Options {
+    #[arg(long = "r2-bucket")]
+    bucket: Option<String>,
+    #[arg(long = "r2-account-id")]
+    account_id: Option<String>,
+    #[arg(long = "r2-endpoint")]
+    endpoint: Option<String>,
+    #[arg(long = "r2-prefix")]
+    prefix: Option<String>,
+    #[arg(long = "r2-public-base")]
+    public_base: Option<String>,
+}
+
+impl R2Options {
+    fn resolve(self) -> Result<Option<R2Config>> {
+        #[derive(serde::Deserialize, Default)]
+        struct Config {
+            r2: Option<R2Options>,
+        }
+        let file: Config = if std::path::Path::new("vesper.toml").exists() {
+            toml::from_str(&fs::read_to_string("vesper.toml")?).map_err(|_| {
+                anyhow::anyhow!(
+                    "invalid vesper.toml configuration (R2 accepts only non-secret settings)"
+                )
+            })?
+        } else {
+            Config::default()
+        };
+        let old = file.r2.unwrap_or_default();
+        let options = Self {
+            bucket: self.bucket.or(old.bucket),
+            account_id: self.account_id.or(old.account_id),
+            endpoint: self.endpoint.or(old.endpoint),
+            prefix: self.prefix.or(old.prefix),
+            public_base: self.public_base.or(old.public_base),
+        };
+        if options.bucket.is_none()
+            && options.account_id.is_none()
+            && options.endpoint.is_none()
+            && options.prefix.is_none()
+            && options.public_base.is_none()
+        {
+            return Ok(None);
+        }
+        let config = R2Config {
+            bucket: options.bucket.context("R2 bucket is required")?,
+            account_id: options.account_id.unwrap_or_default(),
+            endpoint: options.endpoint,
+            prefix: options.prefix.unwrap_or_default(),
+            public_base: options.public_base.context("R2 public_base is required")?,
+        };
+        config.validate()?;
+        vesper_meta::validate_url_template(&config.url_template())?;
+        Ok(Some(config))
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -98,6 +158,8 @@ enum Command {
         json: bool,
     },
     Publish {
+        #[command(flatten)]
+        r2: R2Options,
         /// Local developer metadata directory (store, description and version history).
         #[arg(long, conflicts_with = "index")]
         metadata_dir: Option<PathBuf>,
@@ -476,6 +538,7 @@ fn run_command(command: Command) -> Result<()> {
             diff_check(&current, &against, depot_key_hex.as_deref(), key_id, json)?;
         }
         Command::Publish {
+            r2,
             metadata_dir,
             metadata_tag,
             tag,
@@ -495,6 +558,7 @@ fn run_command(command: Command) -> Result<()> {
             index.as_deref(),
             dry_run,
             PublishRemote {
+                r2: r2.resolve()?,
                 metadata_dir: metadata_dir.as_deref(),
                 metadata_tag: &metadata_tag,
                 owner: owner.as_deref(),
@@ -839,6 +903,7 @@ fn run_command(command: Command) -> Result<()> {
                     &manifest,
                     &manifest_value,
                     Some((&owner, &repo)),
+                    None,
                 )?;
             }
             println!(
@@ -1025,6 +1090,7 @@ fn developer_key(key_file: Option<&std::path::Path>) -> Result<KeyPair> {
 }
 
 struct PublishRemote<'a> {
+    r2: Option<R2Config>,
     metadata_dir: Option<&'a std::path::Path>,
     metadata_tag: &'a str,
     owner: Option<&'a str>,
@@ -1072,6 +1138,11 @@ fn publish_local(
             "metadata tag must be nonempty and separate from the build tag"
         );
     }
+    let r2 = remote.r2.clone().map(R2Publisher::from_env).transpose()?;
+    anyhow::ensure!(
+        r2.is_none() || remote.owner.zip(remote.repo).is_some(),
+        "R2 publishing requires --owner and --repo"
+    );
     if dry_run || (index.is_none() && !self_hosted) {
         println!(
             "publish dry-run app_id={} channel={} version={} packs={} bytes={}",
@@ -1081,21 +1152,23 @@ fn publish_local(
             manifest.packs.len(),
             bytes
         );
+        if let Some(r2) = &r2 {
+            let github = github_publisher(&remote)?;
+            r2.mirror(
+                tag,
+                &manifest_path,
+                &packs_dir,
+                &manifest,
+                |release, pack| {
+                    github.download_pack(remote.owner.unwrap(), remote.repo.unwrap(), release, pack)
+                },
+                true,
+            )?;
+        }
         return Ok(());
     }
     if let (Some(owner), Some(repo)) = (remote.owner, remote.repo) {
-        let token = remote
-            .token
-            .map(str::to_owned)
-            .map(Ok)
-            .unwrap_or_else(token_from_env_or_gh)?;
-        let mut publisher = GitHubPublisher::new(token)?;
-        if remote.api_base.is_some() || remote.upload_base.is_some() {
-            publisher = publisher.with_endpoints(
-                remote.api_base.unwrap_or("https://api.github.com"),
-                remote.upload_base.unwrap_or("https://uploads.github.com"),
-            );
-        }
+        let publisher = github_publisher(&remote)?;
         let result = publisher.publish_manifest_and_packs(
             owner,
             repo,
@@ -1110,6 +1183,16 @@ fn publish_local(
             result.uploaded.len(),
             result.skipped_existing.len()
         );
+        if let Some(r2) = &r2 {
+            r2.mirror(
+                tag,
+                &manifest_path,
+                &packs_dir,
+                &manifest,
+                |release, pack| publisher.download_pack(owner, repo, release, pack),
+                false,
+            )?;
+        }
         if self_hosted {
             let dir = remote
                 .metadata_dir
@@ -1121,6 +1204,7 @@ fn publish_local(
                 &manifest_path,
                 &manifest,
                 Some((owner, repo)),
+                remote.r2.as_ref().map(R2Config::url_template).as_deref(),
             )?;
             publisher.publish_metadata(owner, repo, remote.metadata_tag, dir)?;
             println!(
@@ -1142,7 +1226,20 @@ fn publish_local(
         &manifest_path,
         &manifest,
         remote.owner.zip(remote.repo),
+        remote.r2.as_ref().map(R2Config::url_template).as_deref(),
     )
+}
+
+fn github_publisher(remote: &PublishRemote<'_>) -> Result<GitHubPublisher> {
+    let token = remote
+        .token
+        .map(str::to_owned)
+        .map(Ok)
+        .unwrap_or_else(token_from_env_or_gh)?;
+    Ok(GitHubPublisher::new(token)?.with_endpoints(
+        remote.api_base.unwrap_or("https://api.github.com"),
+        remote.upload_base.unwrap_or("https://uploads.github.com"),
+    ))
 }
 
 fn publish_tag<'a>(manifest: &'a Manifest, tag: Option<&'a str>) -> Result<&'a str> {
@@ -1171,9 +1268,18 @@ fn write_publish_index(
     manifest_path: &std::path::Path,
     manifest: &Manifest,
     github: Option<(&str, &str)>,
+    r2_template: Option<&str>,
 ) -> Result<()> {
     let app_dir = index.join("apps").join(&manifest.app_id);
-    write_publish_metadata(&app_dir, channel, tag, manifest_path, manifest, github)?;
+    write_publish_metadata(
+        &app_dir,
+        channel,
+        tag,
+        manifest_path,
+        manifest,
+        github,
+        r2_template,
+    )?;
     println!(
         "updated {} (upload packs with GitHub publisher, then commit this checkout)",
         app_dir.join("targets.json").display()
@@ -1189,6 +1295,7 @@ fn write_publish_metadata(
     manifest_path: &std::path::Path,
     manifest: &Manifest,
     github: Option<(&str, &str)>,
+    r2_template: Option<&str>,
 ) -> Result<u64> {
     fs::create_dir_all(app_dir)?;
     let targets_path = app_dir.join("targets.json");
@@ -1227,6 +1334,14 @@ fn write_publish_metadata(
             url_template: github_release_template(owner, repo),
             priority: 0,
         }];
+    }
+    if let Some(template) = r2_template {
+        targets.sources.push(AppSource {
+            id: "r2".into(),
+            kind: "r2".into(),
+            url_template: template.into(),
+            priority: 1,
+        });
     }
     targets.version = targets.version.saturating_add(1);
     targets.expires = expires_in(90);

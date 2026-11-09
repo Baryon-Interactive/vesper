@@ -6,7 +6,7 @@ permissions:
   contents: read
   pull-requests: read
 env:
-  VESPER_VERSION: '0.5.0'
+  VESPER_VERSION: '0.6.0'
   VESPER_SHA256: '0000000000000000000000000000000000000000000000000000000000000000'
   VESPER_RELEASES_REPO: EthanInMel/gsp-releases
 jobs:

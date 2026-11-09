@@ -15,7 +15,7 @@ Run on Windows with Docker Desktop in Linux container mode, Git, tar, Rust
 The development workspace uses the same compiler via [rust-toolchain.toml](../rust-toolchain.toml):
 
 ```powershell
-powershell -NoProfile -File scripts/build-vesper-release.ps1 -Version 0.5.0 -OutDir ./target/release-out
+powershell -NoProfile -File scripts/build-vesper-release.ps1 -Version 0.6.0 -OutDir ./target/release-out
 ```
 
 `-Version` must match the workspace version in the archived commit. The script
@@ -62,7 +62,7 @@ After review, the **maintainer** runs the following from the output directory
 against the already-created public binary repository:
 
 ```powershell
-gh release create vesper-v0.5.0 vesper-linux-x64 vesper-windows-x64.exe SHA256SUMS --repo EthanInMel/gsp-releases --title 'vesper 0.5.0' --notes 'Built from source commit <full-commit-sha>; see SHA256SUMS.'
+gh release create vesper-v0.6.0 vesper-linux-x64 vesper-windows-x64.exe SHA256SUMS --repo EthanInMel/gsp-releases --title 'vesper 0.6.0' --notes 'Built from source commit <full-commit-sha>; see SHA256SUMS.'
 ```
 
 Replace the version and commit with the reviewed build provenance. Do not

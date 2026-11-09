@@ -14,6 +14,8 @@ use std::time::Duration;
 
 #[derive(Default)]
 struct Remote {
+    mirror: BTreeMap<String, Vec<u8>>,
+    reject_mirror: bool,
     created: bool,
     metadata_created: bool,
     metadata_assets: BTreeMap<String, Vec<u8>>,
@@ -86,7 +88,21 @@ impl GitHubMock {
                 let mut extra = String::new();
                 let metadata_release = json!({"id":3,"tag_name":"vesper-metadata","upload_url":format!("{origin}/metadata-uploads{{?name,label}}"),"assets_url":format!("{origin}/metadata-assets")});
                 let names = ["targets.json", "store.json", "description.md"];
-                let result = if path.ends_with("/releases/tags/vesper-metadata") {
+                let result = if path.starts_with("/mirror/") {
+                    if remote.reject_mirror {
+                        status = "503 Unavailable";
+                        Vec::new()
+                    } else if method == "PUT" {
+                        remote.mirror.insert(path.into(), body);
+                        Vec::new()
+                    } else if let Some(value) = remote.mirror.get(path) {
+                        extra = format!("X-Mock-Size: {}\r\n", value.len());
+                        value.clone()
+                    } else {
+                        status = "404 Not Found";
+                        Vec::new()
+                    }
+                } else if path.ends_with("/releases/tags/vesper-metadata") {
                     if !remote.metadata_created {
                         status = "404 Not Found";
                     }
@@ -169,7 +185,9 @@ impl GitHubMock {
                     result.len()
                 )
                 .unwrap();
-                stream.write_all(&result).unwrap();
+                if method != "HEAD" {
+                    let _ = stream.write_all(&result);
+                }
             }
         });
         Self {
@@ -490,4 +508,216 @@ fn publish_tag_and_publish_github_share_index_and_reject_ambiguous_tag_before_re
     let missing = vesper(&explicit);
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("missing from release"));
+}
+
+#[test]
+fn r2_publish_mirrors_old_packs_and_preserves_targets_on_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input");
+    let old = temp.path().join("old");
+    let build = temp.path().join("build");
+    let index = temp.path().join("index");
+    let metadata = index.join("apps/test.publish");
+    fs::create_dir_all(&metadata).unwrap();
+    fs::write(metadata.join("store.json"), b"{}").unwrap();
+    fs::write(metadata.join("description.md"), b"Mirror test").unwrap();
+    fs::create_dir_all(&input).unwrap();
+    fs::write(input.join("old.bin"), vec![42; 8192]).unwrap();
+    assert_success(vesper(&[
+        "pack",
+        "--input",
+        input.to_str().unwrap(),
+        "--output",
+        old.to_str().unwrap(),
+        "--app-id",
+        "test.publish",
+        "--platform",
+        "windows-x64",
+        "--version",
+        "1",
+        "--release-tag",
+        "r1",
+    ]));
+    fs::write(input.join("new.bin"), vec![73; 8192]).unwrap();
+    assert_success(vesper(&[
+        "pack",
+        "--input",
+        input.to_str().unwrap(),
+        "--output",
+        build.to_str().unwrap(),
+        "--app-id",
+        "test.publish",
+        "--platform",
+        "windows-x64",
+        "--version",
+        "2",
+        "--release-tag",
+        "r2",
+        "--previous",
+        old.join("manifest.cbor.zst").to_str().unwrap(),
+    ]));
+    let server = GitHubMock::new();
+    for file in fs::read_dir(old.join("packs")).unwrap() {
+        let file = file.unwrap();
+        server.remote.lock().unwrap().old_assets.insert(
+            file.file_name().to_string_lossy().into_owned(),
+            fs::read(file.path()).unwrap(),
+        );
+    }
+    let mut args = vec![
+        "publish",
+        build.to_str().unwrap(),
+        "--tag",
+        "r2",
+        "--index",
+        index.to_str().unwrap(),
+        "--owner",
+        "owner",
+        "--repo",
+        "repo",
+        "--token",
+        "mock-token",
+        "--api-base",
+        &server.base,
+        "--upload-base",
+        &server.base,
+        "--r2-bucket",
+        "mirror",
+        "--r2-endpoint",
+        &server.base,
+        "--r2-prefix",
+        "game",
+        "--r2-public-base",
+        "https://cdn.example.com/game",
+    ];
+    let invoke = |args: &[&str], credentials: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_vesper"));
+        command
+            .args(args)
+            .current_dir(temp.path())
+            .env("VESPER_DEV_KEY", "13".repeat(32));
+        if credentials {
+            command
+                .env("VESPER_R2_ACCESS_KEY_ID", "mock-access")
+                .env("VESPER_R2_SECRET_ACCESS_KEY", "mock-secret");
+        } else {
+            command
+                .env_remove("VESPER_R2_ACCESS_KEY_ID")
+                .env_remove("VESPER_R2_SECRET_ACCESS_KEY");
+        }
+        command.output().unwrap()
+    };
+    let missing = invoke(&args, false);
+    assert!(!missing.status.success());
+    let error = String::from_utf8_lossy(&missing.stderr);
+    assert!(error.contains("VESPER_R2_ACCESS_KEY_ID"));
+    assert!(!error.contains("mock-secret"));
+    assert!(server.remote.lock().unwrap().requests.is_empty());
+    args.push("--dry-run");
+    let dry = invoke(&args, true);
+    assert!(String::from_utf8_lossy(&dry.stdout).contains("would-upload game/r1/"));
+    assert_success(dry);
+    assert!(!metadata.join("targets.json").exists());
+    assert!(server
+        .remote
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .all(|(m, _, _)| m == "GET" || m == "HEAD"));
+    assert!(server.remote.lock().unwrap().mirror.is_empty());
+    args.pop();
+    assert_success(invoke(&args, true));
+    let targets = fs::read(metadata.join("targets.json")).unwrap();
+    let value: Value = serde_json::from_slice(&targets).unwrap();
+    assert_eq!(value["signed"]["sources"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        value["signed"]["sources"][1]["url_template"],
+        "https://cdn.example.com/game/{release}/{pack_id}"
+    );
+    {
+        let remote = server.remote.lock().unwrap();
+        assert!(remote
+            .mirror
+            .contains_key("/mirror/game/r2/manifest.cbor.zst"));
+        for (name, bytes) in &remote.old_assets {
+            assert_eq!(remote.mirror[&format!("/mirror/game/r1/{name}")], *bytes);
+        }
+    }
+    // A corrupt recovered old pack fails its hash check before targets change.
+    {
+        let mut remote = server.remote.lock().unwrap();
+        remote.mirror.clear();
+        let bytes = remote.old_assets.values_mut().next().unwrap();
+        bytes[0] ^= 1;
+    }
+    let failed = invoke(&args, true);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("length/hash mismatch"));
+    assert_eq!(fs::read(metadata.join("targets.json")).unwrap(), targets);
+    // Missing objects also leave the signed publication untouched.
+    server.remote.lock().unwrap().old_assets.clear();
+    assert!(!invoke(&args, true).status.success());
+    assert_eq!(fs::read(metadata.join("targets.json")).unwrap(), targets);
+}
+
+#[test]
+fn r2_config_cli_overrides_file_and_self_hosted_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input");
+    let build = temp.path().join("build");
+    let metadata = temp.path().join("metadata");
+    fs::create_dir_all(&input).unwrap();
+    fs::write(input.join("game.bin"), vec![7; 8192]).unwrap();
+    fs::create_dir_all(&metadata).unwrap();
+    fs::write(metadata.join("store.json"), b"{}").unwrap();
+    fs::write(metadata.join("description.md"), b"Mirror test").unwrap();
+    assert_success(vesper(&[
+        "pack",
+        "--input",
+        input.to_str().unwrap(),
+        "--output",
+        build.to_str().unwrap(),
+        "--app-id",
+        "test.publish",
+        "--platform",
+        "windows-x64",
+        "--version",
+        "r2",
+    ]));
+    let server = GitHubMock::new();
+    fs::write(temp.path().join("vesper.toml"), format!("app_id = 'test.publish'\n[r2]\nbucket = 'wrong'\nendpoint = '{}'\nprefix = 'game'\npublic_base = 'https://cdn.example.com/game'\n", server.base)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_vesper"))
+        .current_dir(temp.path())
+        .args([
+            "publish",
+            build.to_str().unwrap(),
+            "--metadata-dir",
+            metadata.to_str().unwrap(),
+            "--owner",
+            "owner",
+            "--repo",
+            "repo",
+            "--token",
+            "mock-token",
+            "--api-base",
+            &server.base,
+            "--upload-base",
+            &server.base,
+            "--r2-bucket",
+            "mirror",
+        ])
+        .env("VESPER_DEV_KEY", "13".repeat(32))
+        .env("VESPER_R2_ACCESS_KEY_ID", "mock-access")
+        .env("VESPER_R2_SECRET_ACCESS_KEY", "mock-secret")
+        .output()
+        .unwrap();
+    assert_success(output);
+    let remote = server.remote.lock().unwrap();
+    let targets: Value = serde_json::from_slice(&remote.metadata_assets["targets.json"]).unwrap();
+    assert_eq!(targets["signed"]["sources"][0]["priority"], 0);
+    assert_eq!(targets["signed"]["sources"][1]["kind"], "r2");
+    assert!(remote
+        .mirror
+        .contains_key("/mirror/game/r2/manifest.cbor.zst"));
 }

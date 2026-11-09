@@ -62,6 +62,63 @@ create a repository, register routes, submit PRs or dispatch catalogue workflows
 For custom HTTPS hosting, copy the same three local metadata files to the
 registered base directory. No Pages setup is needed for Release hosting.
 
+## Optional R2 mirror
+
+GitHub Releases is the default, with zero hosting configuration. An optional
+Cloudflare R2 mirror suits large games or high download volumes. Standard R2
+storage includes 10 GB-month free each month, then costs $0.015/GB-month. Class A
+operations include 1 million free requests per month; Class B includes 10 million.
+Egress traffic is free. Enabling R2 requires a payment method. Public `r2.dev`
+addresses are rate limited and unsuitable for production; bind a custom domain.
+See [Cloudflare pricing](https://developers.cloudflare.com/r2/pricing/) and
+[public bucket access](https://developers.cloudflare.com/r2/buckets/public-buckets/).
+
+Create a bucket in the R2 dashboard, then create an API token scoped to that
+bucket with Object Read & Write permissions. Supply its S3 access key ID and
+secret access key as `VESPER_R2_ACCESS_KEY_ID` and
+`VESPER_R2_SECRET_ACCESS_KEY` through the process environment or CI secrets.
+Credentials belong only in these environment variables; never put them in
+`vesper.toml`, command arguments or committed files.
+
+```powershell
+vesper publish ./dist-v1 --owner example --repo game-builds --tag v1.0.0 --metadata-dir ./metadata --r2-bucket game-builds --r2-account-id <account-id> --r2-prefix game --r2-public-base https://cdn.example.com/game
+```
+
+The same mirror flags work with `--index ./index`. Optional non-secret defaults
+come from `[r2]` in `vesper.toml` in the current directory; CLI values take
+precedence independently for each field:
+
+```toml
+[r2]
+bucket = "game-builds"
+account_id = "your-account-id"
+prefix = "game"
+public_base = "https://cdn.example.com/game"
+```
+
+`endpoint` / `--r2-endpoint` overrides the S3 endpoint; the default is
+`https://<account-id>.r2.cloudflarestorage.com`. Endpoint and public base require
+HTTPS, with HTTP on `127.0.0.1` allowed for local tests. The public base includes
+the prefix's public path. Objects use `<prefix>/<release_tag>/<asset_name>`, and
+the signed source template is `<public_base>/{release}/{pack_id}`.
+
+The mirror contains the manifest and every referenced pack, including reused
+packs owned by older releases. Same-size objects confirmed with HEAD are skipped;
+different sizes are overwritten. Missing objects use local pack files when
+available, otherwise anonymously downloaded GitHub Release assets. Local and
+recovered packs must match manifest length and BLAKE3 before upload. Every object
+is confirmed by HEAD before targets are written. Any recovery, upload or
+confirmation failure stops publication without changing targets. Successful
+publication signs GitHub at priority 0 and R2 at priority 1. Without mirror
+configuration, publication signs only GitHub.
+
+`--dry-run` performs HEAD checks and verified recovery reads, prints `skipped`
+or `would-upload` for each mirror object, and performs no upload or metadata
+write. It requires the same environment credentials to inspect the bucket.
+Clients probe enabled sources and use the fastest; players can disable `r2`
+in Settings. Mirror operators cannot authorize modified content: signed targets
+bind the manifest, and manifests bind pack/chunk content hashes.
+
 ## Aggregation and client updates
 
 The central `aggregate.yml` workflow runs every 15 minutes and supports manual

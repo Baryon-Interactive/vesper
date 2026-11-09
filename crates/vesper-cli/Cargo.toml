@@ -19,6 +19,8 @@ vesper-meta = { path = "../vesper-meta" }
 vesper-publish = { path = "../vesper-publish" }
 hex.workspace = true
 serde_json.workspace = true
+serde.workspace = true
+toml = "0.8"
 walkdir.workspace = true
 zstd.workspace = true
 windows-sys.workspace = true

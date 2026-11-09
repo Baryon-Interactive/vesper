@@ -100,6 +100,24 @@ Publication does not create an index PR or trigger aggregation itself.
 `gc` currently passes an empty retained-manifest set: use it only on disposable
 pack directories, never as a production retention planner. It does not repack.
 
+### R2 publishing options
+
+`publish` accepts optional `--r2-bucket`, `--r2-account-id`, `--r2-endpoint`,
+`--r2-prefix` and `--r2-public-base`. Non-secret defaults are read from the
+current directory's `vesper.toml` `[r2]` fields `bucket`, `account_id`, `endpoint`,
+`prefix` and `public_base`; CLI values override each field. Bucket and public
+base are required when R2 is configured; supply account ID or endpoint.
+Prefix defaults to empty. R2 requires `--owner` and `--repo` for a complete
+GitHub-backed mirror, in both `--metadata-dir` and `--index` modes.
+
+Only `VESPER_R2_ACCESS_KEY_ID` and `VESPER_R2_SECRET_ACCESS_KEY` supply credentials.
+The publisher uses path-style SigV4 PUT/HEAD, region `auto`, service `s3`.
+HEAD skips equal-size objects and confirms every upload. Reused packs missing
+locally are downloaded from their original GitHub release and hash verified.
+Publication fails before targets change if the mirror is incomplete. `--dry-run`
+prints object upload/skip plans using read-only HEAD and recovery requests.
+See [R2 setup and pricing](publishing.md#optional-r2-mirror).
+
 ## Index maintenance
 
 | Subcommand under `index` | Purpose and key arguments |
