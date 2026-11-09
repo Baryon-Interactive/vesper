@@ -2,7 +2,7 @@ use crate::{
     credentials,
     events::{EventSink, NoopEventSink},
     gateway, library,
-    metadata::{self, fetch_manifest_bytes, source_bases},
+    metadata::{self, fetch_manifest_bytes, ranked_source_bases},
     runtime::validate_runtime_rules,
     state::{installed_targets_path, task_path, AppState},
     tasks::{self, task_update, TaskRecord},
@@ -195,13 +195,18 @@ pub(crate) fn run_install(
     fs::create_dir_all(&dir)?;
     let installer = Installer::new(&dir);
     let chunk_store = dir.join(".vesper").join("chunks");
-    let mut fetcher = MultiSourceFetcher::new(source_bases(
+    let mut fetcher = MultiSourceFetcher::new(ranked_source_bases(
         &request.metadata_base,
+        &request.app_id,
         &targets.signed,
         &request.channel,
         &settings.enabled_sources,
     )?)?
-    .with_chunk_store(chunk_store.clone())?;
+    .with_chunk_store(chunk_store.clone())?
+    .with_ranking_callback({
+        let app_id = request.app_id.clone();
+        move |ids| metadata::cache_source_ranking(&app_id, ids)
+    });
     if let Some(crypto) = crypto.clone() {
         fetcher = fetcher.with_crypto(crypto);
     }
@@ -482,14 +487,19 @@ pub fn repair_from_index(
         .collect::<Vec<_>>();
     let mut repair_manifest = full_manifest.clone();
     repair_manifest.files = repair_files;
-    let mut fetcher = MultiSourceFetcher::new(source_bases(
+    let mut fetcher = MultiSourceFetcher::new(ranked_source_bases(
         &settings.api_base,
+        app_id,
         &targets.signed,
         &channel,
         &settings.enabled_sources,
     )?)?
     .with_chunk_store(root.join(".vesper/repair-chunks"))?
-    .with_local_manifest(&full_manifest, &root);
+    .with_local_manifest(&full_manifest, &root)
+    .with_ranking_callback({
+        let app_id = app_id.to_owned();
+        move |ids| metadata::cache_source_ranking(&app_id, ids)
+    });
     if full_manifest.encrypted {
         let key_id = full_manifest.key_id;
         let token = credentials::load()?;

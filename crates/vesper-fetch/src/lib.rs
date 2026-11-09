@@ -1139,20 +1139,75 @@ impl SourceSpec {
     }
 }
 
+type RankingCallback = Arc<dyn Fn(Vec<String>) + Send + Sync>;
+
 pub struct MultiSourceFetcher {
+    ids: Vec<String>,
+    health: Arc<Mutex<SourceHealth>>,
+    probed: Mutex<bool>,
+    ranking_callback: Option<RankingCallback>,
+    probe_bytes: Arc<AtomicU64>,
     sources: Vec<Arc<Fetcher>>,
     hedged_total: Arc<AtomicU64>,
 }
 
 struct SourceHealth {
+    order: Vec<usize>,
+    rates: Vec<f64>,
+    contender: Option<usize>,
+    votes: usize,
+    cooldown: usize,
     consecutive_failures: Vec<u8>,
     demoted: Vec<bool>,
     in_flight: Vec<u8>,
 }
 
 impl SourceHealth {
+    fn observe(&mut self, index: usize, rate: f64) {
+        self.rates[index] = if self.rates[index] == 0.0 {
+            rate
+        } else {
+            self.rates[index] * 0.5 + rate * 0.5
+        };
+        if self.cooldown > 0 {
+            self.cooldown -= 1;
+            return;
+        }
+        let primary = self.order[0];
+        let candidate = self
+            .order
+            .iter()
+            .copied()
+            .filter(|i| !self.demoted[*i])
+            .max_by(|a, b| self.rates[*a].total_cmp(&self.rates[*b]))
+            .unwrap_or(primary);
+        if candidate != primary && self.rates[candidate] > self.rates[primary] * 1.5 {
+            if self.contender == Some(candidate) {
+                self.votes += 1;
+            } else {
+                self.contender = Some(candidate);
+                self.votes = 1;
+            }
+            if self.votes >= 3 {
+                self.order.retain(|i| *i != candidate);
+                self.order.insert(0, candidate);
+                self.votes = 0;
+                self.contender = None;
+                self.cooldown = 8;
+            }
+        } else {
+            self.votes = 0;
+            self.contender = None;
+        }
+    }
+
     fn new(count: usize) -> Self {
         Self {
+            order: (0..count).collect(),
+            rates: vec![0.0; count],
+            contender: None,
+            votes: 0,
+            cooldown: 0,
             consecutive_failures: vec![0; count],
             demoted: vec![false; count],
             in_flight: vec![0; count],
@@ -1161,10 +1216,170 @@ impl SourceHealth {
 }
 
 impl MultiSourceFetcher {
+    /// Called after probing and every primary change. IDs preserve caller identity.
+    pub fn with_ranking_callback(
+        mut self,
+        callback: impl Fn(Vec<String>) + Send + Sync + 'static,
+    ) -> Self {
+        self.ranking_callback = Some(Arc::new(callback));
+        self
+    }
+
+    pub fn source_ranking(&self) -> Vec<String> {
+        self.health
+            .lock()
+            .unwrap()
+            .order
+            .iter()
+            .map(|i| self.ids[*i].clone())
+            .collect()
+    }
+
+    /// Probe traffic is additional network traffic, excluded from content progress.
+    pub fn probe_bytes(&self) -> u64 {
+        self.probe_bytes.load(Ordering::Acquire)
+    }
+
+    fn report_ranking(&self, order: &[usize]) {
+        eprintln!("download primary={}", self.ids[order[0]]);
+        if let Some(callback) = &self.ranking_callback {
+            callback(order.iter().map(|i| self.ids[*i].clone()).collect());
+        }
+    }
+
+    fn probe(&self, manifest: &Manifest) {
+        let mut done = self.probed.lock().unwrap();
+        if *done {
+            return;
+        }
+        *done = true;
+        if self.sources.len() <= 1 {
+            self.report_ranking(&[0]);
+            return;
+        }
+        let Some(pack) = manifest.packs.iter().find(|p| p.size > 0) else {
+            return;
+        };
+        // Keep probing below 1% per source for small/compressible packs.
+        let length = pack.size.div_ceil(128).clamp(1, 256 * 1024);
+        let (tx, rx) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        for (i, source) in self.sources.iter().enumerate() {
+            let source = Arc::clone(source);
+            let pack = pack.clone();
+            let (tx, cancelled, traffic) =
+                (tx.clone(), cancelled.clone(), self.probe_bytes.clone());
+            thread::spawn(move || {
+                let started = Instant::now();
+                let result = (|| -> Result<u64> {
+                    let Source::Http(base) = &source.source else {
+                        anyhow::bail!("local source does not require a probe");
+                    };
+                    let url = pack_url(
+                        base,
+                        &pack.pack_id,
+                        pack.release_tag
+                            .as_deref()
+                            .or(source.default_release.as_deref()),
+                    );
+                    let client = Client::builder()
+                        .redirect(Policy::limited(5))
+                        .timeout(Duration::from_secs(3))
+                        .build()?;
+                    let mut response = client
+                        .get(url)
+                        .header("X-Vesper-Probe", "1")
+                        .header(RANGE, format!("bytes=0-{}", length - 1))
+                        .send()?;
+                    anyhow::ensure!(
+                        response.status().as_u16() == 206,
+                        "probe requires Range support"
+                    );
+                    let mut bytes = 0u64;
+                    let mut buffer = [0u8; 16384];
+                    while bytes < length {
+                        anyhow::ensure!(
+                            !cancelled.load(Ordering::Acquire) && Instant::now() < deadline,
+                            "probe deadline"
+                        );
+                        let size = (length - bytes).min(buffer.len() as u64) as usize;
+                        let n = response.read(&mut buffer[..size])?;
+                        traffic.fetch_add(n as u64, Ordering::AcqRel);
+                        if n == 0 {
+                            break;
+                        }
+                        bytes += n as u64;
+                    }
+                    anyhow::ensure!(
+                        bytes == length && Instant::now() < deadline,
+                        "probe incomplete"
+                    );
+                    Ok(bytes)
+                })();
+                // Sub-50ms transfers are latency/timer dominated and treated as tied.
+                let elapsed = started.elapsed().as_secs_f64();
+                let bytes = result.unwrap_or(0) as f64;
+                let rate = bytes / elapsed.max(0.000001);
+                let score = bytes / elapsed.max(0.05);
+                let _ = tx.send((i, rate, score));
+            });
+        }
+        drop(tx);
+        let mut results = vec![0.0; self.sources.len()];
+        let mut scores = results.clone();
+        for _ in 0..self.sources.len() {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok((i, rate, score)) => {
+                    results[i] = rate;
+                    scores[i] = score;
+                }
+                Err(_) => break,
+            }
+        }
+        cancelled.store(true, Ordering::Release);
+        for (i, rate) in results.iter().enumerate() {
+            eprintln!(
+                "source probe id={} bytes_per_second={rate:.0} status={}",
+                self.ids[i],
+                if *rate > 0.0 {
+                    "ok"
+                } else {
+                    "failed-or-timeout"
+                }
+            );
+        }
+        eprintln!(
+            "download probe_bytes={} (additional traffic)",
+            self.probe_bytes()
+        );
+        let mut state = self.health.lock().unwrap();
+        state.rates = results;
+        let rates = scores;
+        // Treat measurements within 10% as tied to avoid latency noise.
+        let mut ranked = state.order.clone();
+        ranked.sort_by(|a, b| rates[*b].total_cmp(&rates[*a]));
+        let mut start = 0;
+        while start < ranked.len() {
+            let mut end = start + 1;
+            while end < ranked.len() && rates[ranked[end]] >= rates[ranked[start]] * 0.9 {
+                end += 1;
+            }
+            ranked[start..end].sort_unstable();
+            start = end;
+        }
+        state.order = ranked;
+        let order = state.order.clone();
+        drop(state);
+        self.report_ranking(&order);
+    }
+
     pub fn new(specs: Vec<SourceSpec>) -> Result<Self> {
         if specs.is_empty() {
             anyhow::bail!("at least one download source is required");
         }
+        let ids = specs.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+        let health = Arc::new(Mutex::new(SourceHealth::new(specs.len())));
         let mut sources = Vec::with_capacity(specs.len());
         for spec in specs {
             let fetcher = Fetcher::new(spec.source)?;
@@ -1177,6 +1392,11 @@ impl MultiSourceFetcher {
         }
         Ok(Self {
             sources,
+            ids,
+            health,
+            probed: Mutex::new(false),
+            ranking_callback: None,
+            probe_bytes: Arc::new(AtomicU64::new(0)),
             hedged_total: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -1194,6 +1414,11 @@ impl MultiSourceFetcher {
         }
         Ok(Self {
             sources,
+            ids: self.ids,
+            health: self.health,
+            probed: self.probed,
+            ranking_callback: self.ranking_callback,
+            probe_bytes: self.probe_bytes,
             hedged_total: self.hedged_total,
         })
     }
@@ -1213,6 +1438,11 @@ impl MultiSourceFetcher {
             .collect();
         Self {
             sources,
+            ids: self.ids,
+            health: self.health,
+            probed: self.probed,
+            ranking_callback: self.ranking_callback,
+            probe_bytes: self.probe_bytes,
             hedged_total: self.hedged_total,
         }
     }
@@ -1236,6 +1466,11 @@ impl MultiSourceFetcher {
             .collect();
         Self {
             sources,
+            ids: self.ids,
+            health: self.health,
+            probed: self.probed,
+            ranking_callback: self.ranking_callback,
+            probe_bytes: self.probe_bytes,
             hedged_total: self.hedged_total,
         }
     }
@@ -1262,6 +1497,11 @@ impl MultiSourceFetcher {
             .collect();
         Self {
             sources,
+            ids: self.ids,
+            health: self.health,
+            probed: self.probed,
+            ranking_callback: self.ranking_callback,
+            probe_bytes: self.probe_bytes,
             hedged_total: self.hedged_total,
         }
     }
@@ -1271,17 +1511,36 @@ impl MultiSourceFetcher {
     }
 
     pub fn fetch_chunk(&self, id: ChunkId, manifest: &Manifest) -> Result<Vec<u8>> {
-        let mut errors = Vec::new();
-        for (index, fetcher) in self.sources.iter().enumerate() {
-            match fetcher.fetch_chunk(id, manifest) {
-                Ok(bytes) => return Ok(bytes),
-                Err(error) => errors.push(format!("source[{index}] {error:#}")),
+        for source in &self.sources {
+            if let Some(bytes) = source.cached_or_reused(id, manifest)? {
+                return Ok(bytes);
             }
         }
-        Err(anyhow::anyhow!(
-            "all sources failed for {id}: {}",
-            errors.join("; ")
-        ))
+        self.probe(manifest);
+        let plan = plan_ranges_for_manifest(manifest, &[id])?
+            .into_iter()
+            .next()
+            .context("missing chunk range")?;
+        let result = self.fetch_plan_from_sources(
+            manifest,
+            &plan,
+            false,
+            &Arc::new(AtomicBool::new(false)),
+            &self.health,
+        )?;
+        let bytes = result
+            .values
+            .into_iter()
+            .next()
+            .context("missing chunk result")?
+            .1;
+        self.sources[result.source_index].emit_progress(
+            result.transferred_bytes,
+            0,
+            0,
+            &self.ids[result.source_index],
+        );
+        Ok(bytes)
     }
 
     pub fn materialize_file(
@@ -1362,7 +1621,10 @@ impl MultiSourceFetcher {
             Arc::new(Mutex::new(HashMap::new()));
         let active = Arc::new(AtomicUsize::new(0));
         let throughputs = Arc::new(Mutex::new(Vec::<u64>::new()));
-        let health = Arc::new(Mutex::new(SourceHealth::new(self.sources.len())));
+        if total_plans > 0 {
+            self.probe(manifest);
+        }
+        let health = Arc::clone(&self.health);
         let workers = if matches!(self.sources[0].source, Source::Local(_)) {
             self.sources[0].concurrency.clamp(1, 2)
         } else {
@@ -1554,7 +1816,10 @@ impl MultiSourceFetcher {
         let mut errors = Vec::new();
         let mut order = {
             let state = health.lock().unwrap();
-            (0..self.sources.len())
+            state
+                .order
+                .iter()
+                .copied()
                 .filter(|index| !state.demoted[*index])
                 .collect::<Vec<_>>()
         };
@@ -1607,9 +1872,35 @@ impl MultiSourceFetcher {
                     state.consecutive_failures[index] = 0;
                     state.demoted[index] = false;
                     attempt.source_index = index;
+                    let previous = state.order[0];
+                    if !errors.is_empty() && !hedge {
+                        state.order.retain(|i| *i != index);
+                        state.order.insert(0, index);
+                        state.cooldown = 8;
+                    }
+                    state.observe(
+                        index,
+                        attempt.transferred_bytes as f64
+                            / attempt.elapsed.as_secs_f64().max(0.000001),
+                    );
+                    let switched = previous != state.order[0];
+                    let order = state.order.clone();
+                    drop(state);
+                    if switched {
+                        eprintln!(
+                            "source switch {} -> {} (EWMA throughput)",
+                            self.ids[previous], self.ids[order[0]]
+                        );
+                        self.report_ranking(&order);
+                    }
                     return Ok(attempt);
                 }
                 Err(error) => {
+                    if cancel.load(Ordering::Acquire) {
+                        let mut state = health.lock().unwrap();
+                        state.in_flight[index] = state.in_flight[index].saturating_sub(1);
+                        return Err(error);
+                    }
                     let demoted = {
                         let mut state = health.lock().unwrap();
                         state.in_flight[index] = state.in_flight[index].saturating_sub(1);
@@ -1715,6 +2006,9 @@ fn median_throughput(samples: &[u64]) -> Option<u64> {
     sorted.sort_unstable();
     Some(sorted[sorted.len() / 2].max(1))
 }
+
+#[cfg(test)]
+mod adaptive_tests;
 
 fn hedge_threshold(start: u64, end: u64, throughput: u64) -> Option<Duration> {
     let bytes = end.checked_sub(start)?.saturating_add(1);

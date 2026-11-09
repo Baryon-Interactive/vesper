@@ -1587,6 +1587,7 @@ mod tests {
         at: Instant,
         start: u64,
         end: u64,
+        probe: bool,
     }
 
     #[derive(Clone, Debug)]
@@ -1801,12 +1802,21 @@ mod tests {
         }
         let end = end.min(bytes.len().saturating_sub(1) as u64);
         let payload = &bytes[start as usize..=end as usize];
-        let ordinal = direct_count.fetch_add(1, Ordering::SeqCst);
+        let probe = text
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("x-vesper-probe: 1"));
+        // First-content fault injection must not be consumed by speed probes.
+        let ordinal = if probe {
+            usize::MAX
+        } else {
+            direct_count.fetch_add(1, Ordering::SeqCst)
+        };
         let now = Instant::now();
         requests.lock().unwrap().push(RangeRequest {
             at: now,
             start,
             end,
+            probe,
         });
         let count = active.fetch_add(1, Ordering::SeqCst) + 1;
         max_active.fetch_max(count, Ordering::SeqCst);
@@ -2198,8 +2208,17 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         let duplicates = slow.direct_requests().len() + fast.direct_requests().len();
         assert!(duplicates <= 8);
-        let slow_requests = slow.direct_requests();
-        let fast_requests = fast.direct_requests();
+        // Concurrent probe start order is unrelated to content/hedge scheduling.
+        let slow_requests = slow
+            .direct_requests()
+            .into_iter()
+            .filter(|r| !r.probe)
+            .collect::<Vec<_>>();
+        let fast_requests = fast
+            .direct_requests()
+            .into_iter()
+            .filter(|r| !r.probe)
+            .collect::<Vec<_>>();
         if let (Some(slow_first), Some(fast_first)) = (slow_requests.first(), fast_requests.first())
         {
             assert!(fast_first.at >= slow_first.at);

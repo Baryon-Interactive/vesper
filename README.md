@@ -1,7 +1,7 @@
 # Vesper
 
 Vesper is Baryon Interactive's game distribution platform with no fixed hosting cost.
-Game builds live on free GitHub Releases or Hugging Face storage, while a signed
+Game builds default to GitHub Releases, with optional R2 mirrors or Hugging Face storage; a signed
 index repository on GitHub provides the catalogue. Clients verify metadata and
 download only the pack sections needed for an install or update. Hosting remains
 subject to each provider's quotas and terms.
@@ -28,7 +28,7 @@ Client: verify root -> routes -> targets + snapshot/timestamp
 ## Features
 
 - Incremental updates: content-addressed chunks reuse packs across versions.
-- Multiple sources: GitHub, Hugging Face and HTTP, with expired direct-link refresh.
+- Multiple sources: GitHub, optional R2, Hugging Face and HTTP, with throughput probes, adaptive primary selection and direct-link refresh.
 - Signed metadata: threshold Ed25519 root/routes/targets and online snapshot/timestamp roles.
 - Paid builds: HKDF-derived AES-256-GCM encryption, with DepotKeys delivered through a gateway.
 - Installation journals: stage changed files, recover interrupted transactions and roll back backups.
@@ -97,7 +97,9 @@ Initialize a developer identity, pack a build, and publish release assets plus
 signed targets into your own metadata Release. A single registration PR adds
 your public key and `metadata_url` to the central registry. Aggregation runs
 every 15 minutes; subsequent releases need no app PR. Repository-hosted metadata
-is also supported. Updates can reuse packs from earlier releases.
+is also supported. Updates can reuse packs from earlier releases. Optional R2
+mirrors include all referenced packs and use environment-only credentials; see
+[R2 setup](docs/publishing.md#optional-r2-mirror).
 Follow [the publishing guide](docs/publishing.md), including key registration.
 
 ## Running your own catalogue

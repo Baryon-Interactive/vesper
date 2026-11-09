@@ -12,7 +12,7 @@ static catalogue. See the [project overview](../README.md),
 | `vesper-meta` | Ed25519 roles, thresholds, expiry, monotonic versions and metadata links |
 | `vesper-fetch` | Local/HTTP Range reads, source resolution, direct-link refresh, verification and chunk reuse |
 | `vesper-install` | Preflight, staging, journal recovery, file replacement, rollback and user-file preservation |
-| `vesper-publish` | GitHub release upload and remote asset verification |
+| `vesper-publish` | GitHub release publishing, optional SigV4 R2 mirroring and asset verification |
 | `vesper-cli` | Packaging, inspection, publishing, index maintenance and installation commands |
 | `vesper-client` | All client logic: verified catalogue, settings, library, tasks, installation orchestration, gateway, credentials, media, runtime rules and game launch |
 | [Launcher](../launcher/README.md) | Tauri command wrappers, event forwarding, window setup and automatic updater |
@@ -68,7 +68,7 @@ manifests require the `windows-x64` platform identity.
    apps retain their last valid data. Changes explicitly dispatch online signing
    and Pages deployment. Apps without a metadata location use app PRs.
 5. Clients verify trust and manifest size/hash before fetching. Sources can be
-   GitHub releases, Hugging Face or HTTP; templates use `{release}` and `{pack_id}`.
+   GitHub releases, Hugging Face, HTTP or R2; templates use `{release}` and `{pack_id}`.
    Every chunk is verified after decoding. HTTP requires a matching `206`
    `Content-Range`; a full `200` is refused.
 6. The installer stages changed files and journals same-volume file renames.
@@ -81,6 +81,38 @@ chunks persist under `.vesper/chunks` during a transaction for restart reuse;
 commit clears this temporary store. Declared user-file globs are preserved by
 update, repair and default uninstall. Windows lock failures report Restart
 Manager owners rather than force-killing processes.
+
+## Download source selection
+
+Priority establishes the initial ordering and breaks throughput ties. The client
+persists source IDs and a timestamp per app in `metadata/<app_id>/source-ranking.json`;
+a ranking at most 24 hours old supplies the next initial order. Disabled sources
+are filtered before ranking. Manifest requests try all enabled sources in that
+order, rejecting HTTP failures and incorrect length/BLAKE3 with stderr logs.
+
+For content downloads with multiple sources, the fetcher probes each source in
+parallel using a Range of up to 256 KiB (at most 1/128 of the sampled pack,
+rounded up) from a referenced pack and a three-second
+total timeout. Failed probes sort last without contributing failure counters.
+Transfers below 50 ms are treated as latency dominated. Measurements within
+10% are tied using the initial order. A single source sends
+no probe. Probe bytes are additional traffic, are not reused, and are reported
+separately by `probe_bytes()` and stderr; overhead is at most 256 KiB per source
+for a conforming response. Chunk integrity checks still apply to all content.
+
+Successful range requests, including hedges, update per-source throughput EWMA
+with alpha 0.5. A candidate exceeding the primary by 1.5 times for three
+observations becomes primary, followed by an eight-observation cooldown. Failover
+to a successful backup also changes the primary. Probe outcomes, primary choices
+and switches are logged to stderr and ranking changes refresh the app cache.
+Consecutive-failure demotion, slow-tail hedging and loser cancellation remain
+active; cancellation does not count as a source failure.
+
+An R2 mirror is an availability/performance provider. It requires no content
+trust: developer-signed targets bind manifest length/BLAKE3, the manifest binds
+pack and chunk hashes, and decoded chunks are verified before installation.
+The publisher signs the R2 source only after every referenced object, including
+older reused packs, passes HEAD confirmation. GitHub remains the default source.
 
 ## Signature chain and key responsibilities
 

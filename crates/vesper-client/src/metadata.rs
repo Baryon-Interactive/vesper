@@ -238,46 +238,87 @@ pub(crate) fn source_bases(
             } else {
                 join_url(base, &source.url_template)
             };
-            Ok(SourceSpec::with_default_release(
-                Source::Http(url),
-                release.clone(),
-            ))
+            let mut spec = SourceSpec::with_default_release(Source::Http(url), release.clone());
+            spec.id = source.id;
+            Ok(spec)
         })
         .collect()
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SourceRanking {
+    recorded_at: u64,
+    ids: Vec<String>,
+}
+
+fn apply_ranking(specs: &mut [SourceSpec], ranking: &SourceRanking, now: u64) {
+    if now < ranking.recorded_at || now - ranking.recorded_at > 24 * 3600 {
+        return;
+    }
+    specs.sort_by_key(|s| {
+        ranking
+            .ids
+            .iter()
+            .position(|id| id == &s.id)
+            .unwrap_or(usize::MAX)
+    });
+}
+
+fn apply_cached_ranking(specs: &mut [SourceSpec], path: &std::path::Path, now: u64) {
+    if let Ok(bytes) = fs::read(path) {
+        if let Ok(ranking) = serde_json::from_slice::<SourceRanking>(&bytes) {
+            apply_ranking(specs, &ranking, now);
+        }
+    }
+}
+
+pub(crate) fn ranked_source_bases(
+    base: &str,
+    app_id: &str,
+    targets: &AppTargetsSigned,
+    channel: &str,
+    enabled: &[String],
+) -> Result<Vec<SourceSpec>> {
+    let mut specs = source_bases(base, targets, channel, enabled)?;
+    let path = state_dir()
+        .join("metadata")
+        .join(app_id)
+        .join("source-ranking.json");
+    apply_cached_ranking(&mut specs, &path, vesper_meta::now_unix());
+    Ok(specs)
+}
+
+pub(crate) fn cache_source_ranking(app_id: &str, ids: Vec<String>) {
+    if let Err(error) = cache_metadata(
+        app_id,
+        "source-ranking.json",
+        &SourceRanking {
+            recorded_at: vesper_meta::now_unix(),
+            ids,
+        },
+    ) {
+        eprintln!("{app_id}: source ranking cache failed: {error:#}");
+    }
+}
+
+#[cfg(test)]
 fn manifest_url(
     base: &str,
     targets: &AppTargetsSigned,
     channel: &str,
     enabled: &[String],
 ) -> Result<String> {
-    let channel = targets
-        .channels
-        .get(channel)
-        .context("requested channel is not published")?;
-    let source = targets
-        .sources
-        .iter()
-        .filter(|source| {
-            enabled.is_empty()
-                || enabled
-                    .iter()
-                    .any(|id| id == &source.id || id == &source.kind)
-        })
-        .min_by_key(|source| source.priority)
-        .context("no manifest source is published")?;
-    let url = source
-        .url_template
-        .replace("{release}", &channel.manifest.release_tag)
-        .replace("{pack_id}", &channel.manifest.asset_name);
-    Ok(
-        if url.starts_with("http://") || url.starts_with("https://") {
-            url
-        } else {
-            join_url(base, &url)
-        },
-    )
+    let source = source_bases(base, targets, channel, enabled)?
+        .into_iter()
+        .next()
+        .context("no manifest source")?;
+    let Source::Http(template) = source.source else {
+        anyhow::bail!("manifest requires HTTP");
+    };
+    let manifest = &targets.channels[channel].manifest;
+    Ok(template
+        .replace("{release}", &manifest.release_tag)
+        .replace("{pack_id}", &manifest.asset_name))
 }
 
 pub(crate) fn fetch_manifest_bytes(
@@ -291,15 +332,20 @@ pub(crate) fn fetch_manifest_bytes(
         .channels
         .get(channel)
         .context("requested channel is not published")?;
-    let candidates = [
-        manifest_url(base, targets, channel, enabled)?,
-        join_url(
-            base,
-            &format!("apps/{app_id}/{}", channel_meta.manifest.asset_name),
-        ),
-    ];
+    let candidates = ranked_source_bases(base, app_id, targets, channel, enabled)?
+        .into_iter()
+        .filter_map(|spec| match spec.source {
+            Source::Http(template) => Some((
+                spec.id,
+                template
+                    .replace("{release}", &channel_meta.manifest.release_tag)
+                    .replace("{pack_id}", &channel_meta.manifest.asset_name),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     let mut last_error = None;
-    for url in candidates {
+    for (id, url) in candidates {
         match client()?
             .get(&url)
             .send()
@@ -323,6 +369,10 @@ pub(crate) fn fetch_manifest_bytes(
             },
             Err(error) => last_error = Some(error.into()),
         }
+        eprintln!(
+            "{app_id}: manifest source={id} rejected: {}",
+            last_error.as_ref().unwrap()
+        );
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("manifest was not found")))
 }
@@ -332,6 +382,99 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use vesper_meta::{AppChannel, AppChannelManifest, AppSource};
+
+    #[test]
+    fn manifest_404_or_tampering_falls_back_to_next_enabled_source() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+            thread,
+        };
+        fn server(status: u16, body: &'static [u8]) -> (String, thread::JoinHandle<()>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!(
+                "http://{}/{{release}}/{{pack_id}}",
+                listener.local_addr().unwrap()
+            );
+            let worker = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut data = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !data.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = socket.read(&mut buf).unwrap();
+                    assert!(n > 0);
+                    data.extend_from_slice(&buf[..n]);
+                }
+                write!(
+                    socket,
+                    "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                socket.write_all(body).unwrap();
+            });
+            (url, worker)
+        }
+        for status in [404, 200] {
+            let (bad, first) = server(status, b"bad");
+            let (good, second) = server(200, b"yes");
+            let mut value = targets(&bad);
+            value.channels.get_mut("stable").unwrap().manifest.size = 3;
+            value.channels.get_mut("stable").unwrap().manifest.blake3 =
+                hex::encode(vesper_format::hash_bytes(b"yes"));
+            value.sources.push(AppSource {
+                id: "r2".into(),
+                kind: "r2".into(),
+                url_template: good,
+                priority: 1,
+            });
+            assert_eq!(
+                fetch_manifest_bytes(
+                    "http://127.0.0.1:1",
+                    "test.manifest-fallback",
+                    &value,
+                    "stable",
+                    &[]
+                )
+                .unwrap(),
+                b"yes"
+            );
+            first.join().unwrap();
+            second.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn second_download_uses_persisted_ranking_until_expiry_and_respects_enabled_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("source-ranking.json");
+        let mut value = targets("https://example.com/{release}/{pack_id}");
+        value.sources.push(AppSource {
+            id: "r2".into(),
+            kind: "r2".into(),
+            url_template: "https://cdn.example.com/{release}/{pack_id}".into(),
+            priority: 1,
+        });
+        let ranking = SourceRanking {
+            recorded_at: 100,
+            ids: vec!["r2".into(), "github".into()],
+        };
+        fs::write(&path, serde_json::to_vec(&ranking).unwrap()).unwrap();
+        let mut next = source_bases("https://example.com", &value, "stable", &[]).unwrap();
+        apply_cached_ranking(&mut next, &path, 200);
+        assert_eq!(next[0].id, "r2");
+        let mut expired = source_bases("https://example.com", &value, "stable", &[]).unwrap();
+        apply_cached_ranking(&mut expired, &path, 100 + 86401);
+        assert_eq!(expired[0].id, "github");
+        let mut disabled =
+            source_bases("https://example.com", &value, "stable", &["github".into()]).unwrap();
+        apply_cached_ranking(&mut disabled, &path, 200);
+        assert_eq!(disabled.len(), 1);
+        assert_eq!(disabled[0].id, "github");
+    }
 
     #[test]
     fn online_roles_verify_signatures_and_require_roles_outside_bootstrap() {
