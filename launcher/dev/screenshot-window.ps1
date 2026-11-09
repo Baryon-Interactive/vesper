@@ -1,4 +1,4 @@
-param([string]$Out, [string]$Title = 'Vesper')
+param([string]$Out, [string]$Title = 'Vesper', [long]$WindowHandle = 0, [int]$ProcessId = 0)
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
@@ -10,9 +10,14 @@ public class W {
   public struct RECT { public int L, T, R, B; }
 }
 "@
-$p = Get-Process | Where-Object { $_.MainWindowTitle -eq $Title } | Select-Object -First 1
+if ($WindowHandle -ne 0) {
+  $p = Get-Process -Id $ProcessId -ErrorAction Stop
+  $h = [IntPtr]$WindowHandle
+} else {
+  $p = Get-Process | Where-Object { $_.MainWindowTitle -eq $Title } | Select-Object -First 1
+  $h = if ($p) { $p.MainWindowHandle } else { [IntPtr]::Zero }
+}
 if (-not $p) { throw "window not found" }
-$h = $p.MainWindowHandle
 $r = New-Object W+RECT
 [W]::GetWindowRect($h, [ref]$r) | Out-Null
 $w = $r.R - $r.L; $hgt = $r.B - $r.T

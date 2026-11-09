@@ -12,13 +12,22 @@ $indexServer = Start-Process -FilePath 'python' -ArgumentList @((Join-Path $PSSc
 $gatewayServer = Start-Process -FilePath 'python' -ArgumentList @((Join-Path $PSScriptRoot 'server.py'),'--root',$out,'--port',$GatewayPort) -PassThru -WindowStyle Hidden
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$script:vesperWindowHandle = [IntPtr]::Zero
 function Get-Root {
   $deadline = [DateTime]::UtcNow.AddSeconds(10)
   do {
     $script:process.Refresh()
     if ($script:process.HasExited) { throw "Vesper exited during the tour (exit code $($script:process.ExitCode))" }
+    if ($script:vesperWindowHandle -ne [IntPtr]::Zero) {
+      return [System.Windows.Automation.AutomationElement]::FromHandle($script:vesperWindowHandle)
+    }
     if ($script:process.MainWindowHandle -ne [IntPtr]::Zero) {
-      return [System.Windows.Automation.AutomationElement]::FromHandle($script:process.MainWindowHandle)
+      $candidate = [System.Windows.Automation.AutomationElement]::FromHandle($script:process.MainWindowHandle)
+      if ($candidate.Current.Name -eq 'Vesper') {
+        # WebView auxiliary windows can change Process.MainWindowHandle later.
+        $script:vesperWindowHandle = $script:process.MainWindowHandle
+        return $candidate
+      }
     }
     Start-Sleep -Milliseconds 100
   } while ([DateTime]::UtcNow -lt $deadline)
@@ -51,7 +60,7 @@ function Set-Edit([string]$Name, [string]$Value, [int]$Timeout = 30) {
 }
 function Capture([string]$Name, [string[]]$Expected) {
   foreach ($text in $Expected) { Wait-Text $text | Out-Null; Write-Host "ASSERT $Name contains '$text'" }
-  & (Join-Path $PSScriptRoot 'screenshot-window.ps1') -Out (Join-Path $screens "$Name.png") -Title 'Vesper'
+  & (Join-Path $PSScriptRoot 'screenshot-window.ps1') -Out (Join-Path $screens "$Name.png") -WindowHandle $script:vesperWindowHandle.ToInt64() -ProcessId $script:process.Id
   Write-Host "SCREEN $Name.png :: $(Text-Dump)"
 }
 
