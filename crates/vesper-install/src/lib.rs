@@ -2021,6 +2021,59 @@ mod tests {
     }
 
     #[test]
+    fn single_source_stalled_request_is_hedged_and_loser_cancelled() {
+        let (input, build, output, server) = http_install_fixture_with_options(
+            4,
+            8 * 1024 * 1024,
+            RangeServerOptions {
+                stall_first: true,
+                stall_chunk_delay: Duration::from_millis(100),
+                ..RangeServerOptions::default()
+            },
+        );
+        let target = tempfile::tempdir().unwrap();
+        let fetcher = vesper_fetch::MultiSourceFetcher::new(vec![vesper_fetch::SourceSpec::new(
+            vesper_fetch::Source::Http(server.base.clone()),
+        )])
+        .unwrap();
+        let started = Instant::now();
+        Installer::new(target.path())
+            .install(&output.manifest, &fetcher)
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(15));
+        // Poll across multiple writes: Linux may accept the first write after close.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while server.interrupted_connections() == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            server.interrupted_connections() > 0,
+            "stalled connection stayed open"
+        );
+        let requests = server.direct_requests();
+        assert!(
+            requests
+                .iter()
+                .enumerate()
+                .any(|(i, first)| requests[i + 1..]
+                    .iter()
+                    .any(|other| first.start == other.start && first.end == other.end)),
+            "no same-source range was retried on a new connection"
+        );
+        let required = manifest_pack_size(&build, &output.manifest);
+        assert!(server.bytes_served() <= required + 1024 * 1024);
+        assert!(fetcher.hedged_bytes() <= 16 * 1024 * 1024);
+        assert_eq!(fetcher.probe_bytes(), 0);
+        assert_eq!(fetcher.sampling_bytes(), 0);
+        for file in &output.manifest.files {
+            assert_eq!(
+                fs::read(input.path().join(&file.path)).unwrap(),
+                fs::read(target.path().join(&file.path)).unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn stalled_request_is_hedged_and_loser_cancelled() {
         let (_input, build, output, slow) = http_install_fixture_with_options(
             4,

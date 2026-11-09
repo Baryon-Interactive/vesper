@@ -1730,7 +1730,7 @@ impl MultiSourceFetcher {
                             .iter()
                             .filter(|d| !**d)
                             .count();
-                        let candidate = if alternatives > 1
+                        let candidate = if (alternatives > 1 || self.sources.len() == 1)
                             && active.load(Ordering::Acquire) < workers
                         {
                             let mut state = inflight.lock().unwrap();
@@ -1941,7 +1941,9 @@ impl MultiSourceFetcher {
                 .copied()
                 .filter(|index| {
                     !state.demoted[*index]
-                        && (!hedge || *index != progress.source.load(Ordering::Acquire))
+                        && (!hedge
+                            || self.sources.len() == 1
+                            || *index != progress.source.load(Ordering::Acquire))
                 })
                 .collect::<Vec<_>>();
             if let Some(index) = sample {

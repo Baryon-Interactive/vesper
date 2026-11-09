@@ -119,11 +119,14 @@ successful backup also changes the primary. Probe outcomes, sampling bytes,
 primary choices and switches are logged to stderr and ranking changes refresh
 the app cache. Consecutive-failure demotion, slow-tail hedging and loser
 cancellation remain active; cancellation does not count as a source failure.
-Hedging requires an available alternate source, an incomplete network body,
+Hedging requires an incomplete network body,
 and observed per-request progress below one tenth of the completed-request
 median after the existing tail deadline. A fully received body awaiting decode
-is not hedged, and a hedge cannot repeat its original source. Single-source
-content requests are never hedged.
+is not hedged. With multiple sources a hedge requires an available alternate
+and cannot repeat its original source. With a single source it repeats the
+stalled range on a new connection to that source, retaining the same progress
+threshold and loser cancellation. Healthy single-source downloads send no
+duplicate content and still skip probing and sampling.
 
 An R2 mirror is an availability/performance provider. It requires no content
 trust: developer-signed targets bind manifest length/BLAKE3, the manifest binds
