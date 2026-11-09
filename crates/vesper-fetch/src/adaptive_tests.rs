@@ -150,19 +150,26 @@ fn second_faster_source_provides_at_least_eighty_percent() {
 #[test]
 fn slowing_primary_switches_without_oscillation() {
     let (_build, output, pack) = fixture();
-    let primary = Server::new(pack.clone(), 2, 0);
-    let backup = Server::new(pack, 20, 0);
+    let primary = Server::new(pack.clone(), 0, 0);
+    let backup = Server::new(pack, 80, 0);
     let fetcher =
         MultiSourceFetcher::new(vec![primary.spec("primary"), backup.spec("backup")]).unwrap();
     let chunks = &output.manifest.files[0].chunks;
     fetcher.fetch_chunk(chunks[0].id, &output.manifest).unwrap();
     assert_eq!(fetcher.source_ranking()[0], "primary");
-    primary.delay.store(150, Ordering::Release);
-    for chunk in chunks.iter().skip(1).take(12) {
+    primary.delay.store(1000, Ordering::Release);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    for chunk in chunks.iter().skip(1).cycle().take(240) {
         fetcher.fetch_chunk(chunk.id, &output.manifest).unwrap();
+        if fetcher.source_ranking()[0] == "backup" || Instant::now() >= deadline {
+            break;
+        }
     }
     assert_eq!(fetcher.source_ranking()[0], "backup");
     assert!(backup.requests.load(Ordering::Acquire) > 1);
+    let state = fetcher.health.lock().unwrap();
+    assert!(state.sampled_bytes > 0 && state.sampled_bytes <= state.scheduled_bytes / 20);
+    drop(state);
     let mut state = SourceHealth::new(2);
     state.rates = vec![100.0, 120.0];
     for i in 0..30 {
@@ -192,4 +199,28 @@ fn timed_out_probe_remains_a_working_backup_and_single_source_skips_probe() {
         .unwrap();
     assert_eq!(single.requests.load(Ordering::Acquire), 1);
     assert_eq!(fetcher.probe_bytes(), 0);
+}
+
+#[test]
+fn stale_or_probe_only_rates_cannot_trigger_switch_and_sampling_is_bounded() {
+    let mut state = SourceHealth::new(3);
+    state.rates = vec![1.0, 1_000_000.0, 2_000_000.0];
+    for _ in 0..10 {
+        state.observe(0, 1.0);
+    }
+    assert_eq!(state.order[0], 0);
+    state.observe(1, 100.0);
+    state.measured[1] = Some(Instant::now() - Duration::from_secs(31));
+    for _ in 0..10 {
+        state.observe(0, 1.0);
+    }
+    assert_eq!(state.order[0], 0);
+    let mut seen = [false; 3];
+    for bytes in (1..3000).map(|n| (n * 7919 % 1_000_000 + 1) as u64) {
+        if let Some(index) = state.sample_source(bytes) {
+            seen[index] = true;
+        }
+        assert!(state.sampled_bytes <= state.scheduled_bytes / 20);
+    }
+    assert!(seen[1] && seen[2]);
 }

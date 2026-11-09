@@ -100,19 +100,40 @@ no probe. Probe bytes are additional traffic, are not reused, and are reported
 separately by `probe_bytes()` and stderr; overhead is at most 256 KiB per source
 for a conforming response. Chunk integrity checks still apply to all content.
 
-Successful range requests, including hedges, update per-source throughput EWMA
-with alpha 0.5. A candidate exceeding the primary by 1.5 times for three
-observations becomes primary, followed by an eight-observation cooldown. Failover
-to a successful backup also changes the primary. Probe outcomes, primary choices
-and switches are logged to stderr and ranking changes refresh the app cache.
-Consecutive-failure demotion, slow-tail hedging and loser cancellation remain
-active; cancellation does not count as a source failure.
+During downloads a shared byte reservation budget routes useful ranges to
+non-primary sources in round-robin order. Sampling accounts for at most 5% of
+scheduled range bytes, reported by `sampling_bytes()` and stderr alongside the
+budget. These bytes satisfy content requests and introduce no duplicate traffic;
+startup probe bytes are separate. Single-source downloads neither probe nor
+sample. A large range waits until sufficient budget accrues; no measurement is
+used for switching when it becomes stale. Available backups receive periodic
+ranges as the download proceeds, without requiring a slow-tail hedge.
+
+Successful content ranges, including hedges and samples, update per-source EWMA
+with alpha 0.5 using bytes per elapsed second of one request, never aggregate
+worker throughput. Probe rates establish only the initial ranking; the first
+content observation replaces that rate. Switching requires content observations
+from both sources within 30 seconds, a candidate exceeding the primary by 1.5x
+for three observations, and an eight-completion cooldown. Failover to a
+successful backup also changes the primary. Probe outcomes, sampling bytes,
+primary choices and switches are logged to stderr and ranking changes refresh
+the app cache. Consecutive-failure demotion, slow-tail hedging and loser
+cancellation remain active; cancellation does not count as a source failure.
 
 An R2 mirror is an availability/performance provider. It requires no content
 trust: developer-signed targets bind manifest length/BLAKE3, the manifest binds
 pack and chunk hashes, and decoded chunks are verified before installation.
-The publisher signs the R2 source only after every referenced object, including
-older reused packs, passes HEAD confirmation. GitHub remains the default source.
+All targets channels are mirrored before signing, with retained GitHub manifests
+verified against targets before pack enumeration. HEAD checks both size and
+BLAKE3 metadata, which is included in SigV4 signed PUT headers. Files are hashed
+and uploaded in bounded streams; recovered packs are verified staging files.
+Connection deadlines are 30 seconds, read/write idle deadlines 60 seconds, with
+no total upload deadline. Transport failures and 408/429/5xx responses retry
+with exponential backoff. GitHub retries delete any same-name asset and reopen
+the file. Dry-run never reads remote object bodies and defers remote manifest
+pack enumeration to actual publication. R2-backed `promote` returns an explicit
+error directing the caller to verified `publish --channel` instead. GitHub
+remains the default source.
 
 ## Signature chain and key responsibilities
 

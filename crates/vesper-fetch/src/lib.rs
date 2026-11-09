@@ -1154,6 +1154,10 @@ pub struct MultiSourceFetcher {
 struct SourceHealth {
     order: Vec<usize>,
     rates: Vec<f64>,
+    measured: Vec<Option<Instant>>,
+    scheduled_bytes: u64,
+    sampled_bytes: u64,
+    sample_cursor: usize,
     contender: Option<usize>,
     votes: usize,
     cooldown: usize,
@@ -1164,11 +1168,12 @@ struct SourceHealth {
 
 impl SourceHealth {
     fn observe(&mut self, index: usize, rate: f64) {
-        self.rates[index] = if self.rates[index] == 0.0 {
+        self.rates[index] = if self.measured[index].is_none() {
             rate
         } else {
             self.rates[index] * 0.5 + rate * 0.5
         };
+        self.measured[index] = Some(Instant::now());
         if self.cooldown > 0 {
             self.cooldown -= 1;
             return;
@@ -1178,10 +1183,16 @@ impl SourceHealth {
             .order
             .iter()
             .copied()
-            .filter(|i| !self.demoted[*i])
+            .filter(|i| {
+                !self.demoted[*i]
+                    && self.measured[*i].is_some_and(|at| at.elapsed() <= Duration::from_secs(30))
+            })
             .max_by(|a, b| self.rates[*a].total_cmp(&self.rates[*b]))
             .unwrap_or(primary);
-        if candidate != primary && self.rates[candidate] > self.rates[primary] * 1.5 {
+        if candidate != primary
+            && self.measured[primary].is_some_and(|at| at.elapsed() <= Duration::from_secs(30))
+            && self.rates[candidate] > self.rates[primary] * 1.5
+        {
             if self.contender == Some(candidate) {
                 self.votes += 1;
             } else {
@@ -1201,10 +1212,37 @@ impl SourceHealth {
         }
     }
 
+    /// Route useful content to backups, with a shared reservation budget across workers.
+    /// No duplicate traffic: sampled bytes never exceed 5% of scheduled range bytes.
+    fn sample_source(&mut self, bytes: u64) -> Option<usize> {
+        self.scheduled_bytes = self.scheduled_bytes.saturating_add(bytes);
+        if self.sampled_bytes.saturating_add(bytes) > self.scheduled_bytes / 20 {
+            return None;
+        }
+        let backups: Vec<_> = self
+            .order
+            .iter()
+            .copied()
+            .skip(1)
+            .filter(|i| !self.demoted[*i])
+            .collect();
+        if backups.is_empty() {
+            return None;
+        }
+        let index = backups[self.sample_cursor % backups.len()];
+        self.sample_cursor = self.sample_cursor.wrapping_add(1);
+        self.sampled_bytes = self.sampled_bytes.saturating_add(bytes);
+        Some(index)
+    }
+
     fn new(count: usize) -> Self {
         Self {
             order: (0..count).collect(),
             rates: vec![0.0; count],
+            measured: vec![None; count],
+            scheduled_bytes: 0,
+            sampled_bytes: 0,
+            sample_cursor: 0,
             contender: None,
             votes: 0,
             cooldown: 0,
@@ -1238,6 +1276,11 @@ impl MultiSourceFetcher {
     /// Probe traffic is additional network traffic, excluded from content progress.
     pub fn probe_bytes(&self) -> u64 {
         self.probe_bytes.load(Ordering::Acquire)
+    }
+
+    /// Useful range bytes assigned to backup sampling; startup probes are separate.
+    pub fn sampling_bytes(&self) -> u64 {
+        self.health.lock().unwrap().sampled_bytes
     }
 
     fn report_ranking(&self, order: &[usize]) {
@@ -1813,13 +1856,25 @@ impl MultiSourceFetcher {
     ) -> Result<FetchAttempt> {
         let mut errors = Vec::new();
         let mut order = {
-            let state = health.lock().unwrap();
-            state
+            let mut state = health.lock().unwrap();
+            let sample = if !hedge && self.sources.len() > 1 {
+                state.sample_source(plan.end - plan.start + 1)
+            } else {
+                None
+            };
+            let mut order = state
                 .order
                 .iter()
                 .copied()
                 .filter(|index| !state.demoted[*index])
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            if let Some(index) = sample {
+                order.retain(|i| *i != index);
+                order.insert(0, index);
+                eprintln!("source sample id={} sample_bytes={} scheduled_bytes={} budget=5% (useful content, no duplicate bytes)",
+                    self.ids[index], state.sampled_bytes, state.scheduled_bytes);
+            }
+            order
         };
         if hedge && order.len() > 1 {
             order.rotate_left(1);
@@ -1886,7 +1941,7 @@ impl MultiSourceFetcher {
                     drop(state);
                     if switched {
                         eprintln!(
-                            "source switch {} -> {} (EWMA throughput)",
+                            "source switch {} -> {} (fresh single-request EWMA throughput, 1.5x, 3 votes, 8 completion cooldown)",
                             self.ids[previous], self.ids[order[0]]
                         );
                         self.report_ranking(&order);
