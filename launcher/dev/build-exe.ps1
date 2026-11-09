@@ -5,7 +5,15 @@ $vsdev = @(
   $env:VESPER_VCVARS64
 ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if (-not $vsdev) { throw 'Visual Studio developer command script was not found' }
-$env:PATH = ((Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer') + ';') + $env:PATH
+# Keep nested npm/Visual Studio shells below cmd.exe's PATH length limit.
+$toolDirectories = @('node.exe', 'cargo.exe', 'git.exe', 'python.exe', 'powershell.exe') | ForEach-Object {
+  Split-Path -Parent (Get-Command $_ -ErrorAction Stop).Source
+}
+$env:PATH = (@(
+  (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer'),
+  (Join-Path $env:SystemRoot 'System32'),
+  $env:SystemRoot
+) + $toolDirectories | Select-Object -Unique) -join ';'
 $line = 'call "' + $vsdev + '" && cd /d "' + $launcher + '" && npx tauri build --debug --no-bundle'
 cmd /c ($line + ' 2>&1') | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'Tauri debug build failed' }
