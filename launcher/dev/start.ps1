@@ -97,7 +97,7 @@ foreach ($app in $apps) {
   if ($app.Paid) {
     $publicPack = Join-Path $Work "$($app.Folder)-public-pack"
     Invoke-Vesper @('pack','--input',$folder,'--output',$publicPack,'--app-id',$app.Id,'--platform','windows-x64','--version',$app.Version,'--release-tag',$app.Release) | Out-Host
-    Invoke-Vesper @('publish',$publicPack,'--channel','stable','--index',$index) | Out-Host
+    Invoke-Vesper @('publish',$publicPack,'--tag',$app.Release,'--channel','stable','--index',$index) | Out-Host
     Invoke-Vesper @('pack','--input',$folder,'--output',$pack,'--app-id',$app.Id,'--platform','windows-x64','--version',$app.Version,'--release-tag',$app.Release,'--depot-key-hex',('11' * 32),'--key-id','1') | Out-Host
     $targetPath = Join-Path $index "apps/$($app.Id)/targets.json"
     $helperManifest = Join-Path $PSScriptRoot 'sign-paid/Cargo.toml'
@@ -109,7 +109,7 @@ foreach ($app in $apps) {
   } else {
     $packArgs = @('pack','--input',$folder,'--output',$pack,'--app-id',$app.Id,'--platform','windows-x64','--version',$app.Version,'--release-tag',$app.Release)
     Invoke-Vesper $packArgs | Out-Host
-    Invoke-Vesper @('publish',$pack,'--channel','stable','--index',$index) | Out-Host
+    Invoke-Vesper @('publish',$pack,'--tag',$app.Release,'--channel','stable','--index',$index) | Out-Host
   }
 
 }
