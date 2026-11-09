@@ -27,12 +27,14 @@ fastcdc = "3.1"
 hex = "0.4"
 hkdf = "0.12"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 thiserror = "2.0"
 tempfile = "3.23"
+tokio = { version = "1", features = ["rt", "time", "fs", "io-util"] }
+futures-util = "0.3"
 urlencoding = "2.1"
 unicode-normalization = "0.1"
 walkdir = "2.5"

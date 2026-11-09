@@ -80,10 +80,10 @@ for credentials. Never read or print their values or save them to configuration.
 The public base includes the prefix path and requires HTTPS. Production public
 access uses a custom domain; `r2.dev` is rate limited. R2 requires a payment
 method. Consult [setup and pricing](../../docs/publishing.md#optional-r2-mirror).
-The mirror must include the manifest and every pack in its original release
+The mirror must include every targets channel manifest and every pack in its original release
 layout. Missing local packs are recovered from GitHub and length/hash checked.
-Any incomplete mirror fails before targets change. HEAD skips same-size objects;
-`--dry-run` prints read-only upload/skip plans. Both metadata hosting modes work.
+Any incomplete mirror fails before targets change. HEAD skips only size-and-BLAKE3 matches;
+`--dry-run` prints read-only upload/skip/recovery plans without downloading bodies. Remote manifest inventories are checked during actual publication. Use `publish --channel` with R2 settings for promotion; `promote` rejects R2 targets. Both metadata hosting modes work.
 Record both signed sources, HEAD results and recovery failures in release reports.
 Clients select enabled sources by throughput with cached initial rankings and
 manifest fallback; a mirror does not replace signed content verification.

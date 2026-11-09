@@ -98,7 +98,7 @@ signed targets into your own metadata Release. A single registration PR adds
 your public key and `metadata_url` to the central registry. Aggregation runs
 every 15 minutes; subsequent releases need no app PR. Repository-hosted metadata
 is also supported. Updates can reuse packs from earlier releases. Optional R2
-mirrors include all referenced packs and use environment-only credentials; see
+mirrors include every channel manifest and all referenced packs and use environment-only credentials; see
 [R2 setup](docs/publishing.md#optional-r2-mirror).
 Follow [the publishing guide](docs/publishing.md), including key registration.
 

@@ -1,6 +1,6 @@
 //! Minimal path-style S3 PUT/HEAD with AWS Signature Version 4.
 use anyhow::{Context, Result};
-use reqwest::{blocking::Client, Method, Url};
+use reqwest::{Method, Url};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -87,7 +87,6 @@ impl R2Config {
 // Deliberately no Debug implementation: credentials must not enter diagnostics.
 pub struct R2Publisher {
     config: R2Config,
-    client: Client,
     access: String,
     secret: String,
 }
@@ -112,86 +111,103 @@ impl R2Publisher {
             config,
             access,
             secret,
-            client: Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(300))
-                .build()?,
         })
     }
     fn request(
         &self,
         method: Method,
         key: &str,
-        bytes: &[u8],
-    ) -> Result<reqwest::blocking::Response> {
+        file: Option<&Path>,
+        payload_hash: &str,
+        content_hash: Option<&str>,
+    ) -> Result<(reqwest::StatusCode, reqwest::header::HeaderMap)> {
         let mut url = validate_url(&self.config.endpoint())?;
         let path = format!(
-            "{}/{}/{}",
-            url.path().trim_end_matches('/'),
+            "/{}/{}",
             urlencoding::encode(&self.config.bucket),
             key.split('/')
                 .map(|s| urlencoding::encode(s))
                 .collect::<Vec<_>>()
                 .join("/")
         );
-        url.set_path(&path);
-        let date = timestamp(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs());
-        let hash = hex::encode(Sha256::digest(bytes));
+        url.set_path(&format!("{}{}", url.path().trim_end_matches('/'), path));
         let host = match url.port() {
             Some(port) => format!("{}:{port}", url.host_str().unwrap()),
             None => url.host_str().unwrap().to_string(),
         };
-        let headers = BTreeMap::from([
-            ("host".to_string(), host),
-            ("x-amz-content-sha256".into(), hash.clone()),
-            ("x-amz-date".into(), date.clone()),
-        ]);
-        let authorization = authorization(
-            &self.access,
-            &self.secret,
-            "auto",
-            method.as_str(),
-            url.path(),
-            &date,
-            &hash,
-            &headers,
-        );
-        let mut request = self
-            .client
-            .request(method.clone(), url)
-            .header("Authorization", authorization);
-        for (name, value) in headers {
-            request = request.header(name, value);
+        for attempt in 0..4 {
+            let date = timestamp(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs());
+            let mut headers = BTreeMap::from([
+                ("host".into(), host.clone()),
+                ("x-amz-content-sha256".into(), payload_hash.to_string()),
+                ("x-amz-date".into(), date.clone()),
+            ]);
+            if let Some(hash) = content_hash {
+                headers.insert("x-amz-meta-vesper-blake3".into(), hash.into());
+            }
+            let auth = authorization(
+                &self.access,
+                &self.secret,
+                "auto",
+                method.as_str(),
+                url.path(),
+                &date,
+                payload_hash,
+                &headers,
+            );
+            let result = crate::transfer::runtime()?.block_on(async {
+                let mut request = crate::transfer::client()?
+                    .request(method.clone(), url.clone())
+                    .header("Authorization", auth);
+                for (name, value) in headers {
+                    request = request.header(name, value);
+                }
+                crate::transfer::send_file(request, file, crate::transfer::IDLE).await
+            });
+            match result {
+                Ok((status, headers)) if !retry_status(status.as_u16()) => {
+                    return Ok((status, headers))
+                }
+                _ if attempt < 3 => std::thread::sleep(Duration::from_millis(250 << attempt)),
+                _ => anyhow::bail!(
+                    "R2 request failed after retries (transport or retryable HTTP status)"
+                ),
+            }
         }
-        if method == Method::PUT {
-            request = request.body(bytes.to_vec());
-        }
-        // S3 bodies and HTTP diagnostics are untrusted and can echo credentials.
-        request
-            .send()
-            .map_err(|_| anyhow::anyhow!("R2 request transport failed"))
+        unreachable!()
     }
-    pub fn head(&self, key: &str) -> Result<Option<u64>> {
-        let response = self.request(Method::HEAD, key, &[])?;
-        if response.status().as_u16() == 404 {
+    pub fn head(&self, key: &str) -> Result<Option<ObjectIdentity>> {
+        let (status, headers) = self.request(
+            Method::HEAD,
+            key,
+            None,
+            &hex::encode(Sha256::digest([])),
+            None,
+        )?;
+        if status.as_u16() == 404 {
             return Ok(None);
         }
         anyhow::ensure!(
-            response.status().is_success(),
+            status.is_success(),
             "R2 HEAD failed (HTTP {})",
-            response.status().as_u16()
+            status.as_u16()
         );
-        Ok(Some(
-            response
-                .headers()
+        Ok(Some(ObjectIdentity {
+            size: headers
                 .get("content-length")
                 .context("R2 HEAD missing Content-Length")?
                 .to_str()?
                 .parse()?,
-        ))
+            blake3: headers
+                .get("x-amz-meta-vesper-blake3")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .into(),
+        }))
     }
-    pub fn upload(&self, key: &str, bytes: &[u8], dry_run: bool) -> Result<()> {
-        let skip = self.head(key)? == Some(bytes.len() as u64);
+    pub fn upload_file(&self, key: &str, path: &Path, dry_run: bool) -> Result<()> {
+        let identity = ObjectIdentity::from_file(path)?;
+        let skip = self.head(key)?.as_ref() == Some(&identity);
         println!(
             "r2 {} {key} bytes={}",
             if skip {
@@ -201,72 +217,134 @@ impl R2Publisher {
             } else {
                 "upload"
             },
-            bytes.len()
+            identity.size
         );
         if !skip && !dry_run {
-            let response = self.request(Method::PUT, key, bytes)?;
+            let mut file = fs::File::open(path)?;
+            let mut sha = Sha256::new();
+            let mut buffer = [0u8; 64 * 1024];
+            use std::io::Read;
+            loop {
+                let n = file.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                sha.update(&buffer[..n]);
+            }
+            let (status, _) = self.request(
+                Method::PUT,
+                key,
+                Some(path),
+                &hex::encode(sha.finalize()),
+                Some(&identity.blake3),
+            )?;
             anyhow::ensure!(
-                response.status().is_success(),
+                status.is_success(),
                 "R2 PUT failed (HTTP {})",
-                response.status().as_u16()
+                status.as_u16()
             );
         }
         if !dry_run {
             anyhow::ensure!(
-                self.head(key)? == Some(bytes.len() as u64),
-                "R2 object confirmation failed"
+                self.head(key)?.as_ref() == Some(&identity),
+                "R2 object confirmation failed (length/hash mismatch)"
             );
         }
         Ok(())
     }
-    /// Every referenced release is mirrored before metadata may be signed.
+    /// Missing packs are recovered into bounded, automatically removed staging files.
     pub fn mirror(
         &self,
         tag: &str,
         manifest_path: &Path,
         packs_dir: &Path,
         manifest: &Manifest,
-        mut recover: impl FnMut(&str, &PackEntry) -> Result<Vec<u8>>,
+        mut recover: impl FnMut(&str, &PackEntry, Option<&Path>) -> Result<()>,
         dry_run: bool,
     ) -> Result<()> {
         for pack in &manifest.packs {
             let release = pack.release_tag.as_deref().unwrap_or(tag);
             let key = self.config.key(release, &pack.pack_id)?;
-            // Existing same-size objects satisfy the mirror contract without a download.
-            if self.head(&key)? == Some(pack.size) {
+            let expected = ObjectIdentity {
+                size: pack.size,
+                blake3: hex::encode(pack.hash),
+            };
+            if self.head(&key)?.as_ref() == Some(&expected) {
                 println!("r2 skipped {key} bytes={}", pack.size);
                 continue;
             }
             let path = packs_dir.join(&pack.pack_id);
-            let bytes = if path.is_file() {
-                fs::read(path)?
+            if path.is_file() {
+                verify_pack_file(pack, &path)?;
+                self.upload_file(&key, &path, dry_run)?;
+            } else if dry_run {
+                recover(release, pack, None)?;
+                println!("r2 would-recover-from-github {key} bytes={}", pack.size);
             } else {
-                recover(release, pack)?
-            };
-            verify_pack(pack, &bytes)?;
-            self.upload(&key, &bytes, dry_run)?;
+                let staging = tempfile::tempdir_in(
+                    manifest_path.parent().context("manifest parent missing")?,
+                )?;
+                let path = staging.path().join("pack");
+                recover(release, pack, Some(&path))?;
+                verify_pack_file(pack, &path)?;
+                self.upload_file(&key, &path, false)?;
+            }
         }
         let name = manifest_path
             .file_name()
             .context("manifest filename missing")?
             .to_str()
             .context("manifest filename must be UTF-8")?;
-        self.upload(
-            &self.config.key(tag, name)?,
-            &fs::read(manifest_path)?,
-            dry_run,
-        )?;
-        Ok(())
+        self.upload_file(&self.config.key(tag, name)?, manifest_path, dry_run)
+    }
+    pub fn check_remote_manifest(
+        &self,
+        tag: &str,
+        name: &str,
+        size: u64,
+        hash: &str,
+    ) -> Result<bool> {
+        let key = self.config.key(tag, name)?;
+        let skip = self.head(&key)?.as_ref()
+            == Some(&ObjectIdentity {
+                size,
+                blake3: hash.into(),
+            });
+        println!(
+            "r2 {} {key} bytes={size}; manifest pack inventory checked during publish",
+            if skip {
+                "skipped"
+            } else {
+                "would-recover-from-github"
+            }
+        );
+        Ok(skip)
     }
 }
 
-pub fn verify_pack(pack: &PackEntry, bytes: &[u8]) -> Result<()> {
+#[derive(Debug, PartialEq, Eq)]
+pub struct ObjectIdentity {
+    pub size: u64,
+    pub blake3: String,
+}
+impl ObjectIdentity {
+    fn from_file(path: &Path) -> Result<Self> {
+        Ok(Self {
+            size: fs::metadata(path)?.len(),
+            blake3: hex::encode(vesper_format::hash_file(path)?),
+        })
+    }
+}
+pub fn verify_pack_file(pack: &PackEntry, path: &Path) -> Result<()> {
     anyhow::ensure!(
-        bytes.len() as u64 == pack.size && vesper_format::hash_bytes(bytes) == pack.hash,
+        fs::metadata(path)?.len() == pack.size && vesper_format::hash_file(path)? == pack.hash,
         "mirror pack length/hash mismatch: {}",
         pack.pack_id
     );
     Ok(())
+}
+pub(crate) fn retry_status(status: u16) -> bool {
+    status == 408 || status == 429 || (500..600).contains(&status)
 }
 
 fn hmac(key: &[u8], message: &[u8]) -> Vec<u8> {
@@ -393,9 +471,16 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let objects = Arc::new(Mutex::new(BTreeMap::<String, Vec<u8>>::new()));
+        let metadata = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
         let puts = Arc::new(Mutex::new(0));
         let stop = Arc::new(AtomicBool::new(false));
-        let (data, uploads, halt) = (objects.clone(), puts.clone(), stop.clone());
+        let (data, meta, uploads, halt) = (
+            objects.clone(),
+            metadata.clone(),
+            puts.clone(),
+            stop.clone(),
+        );
+        let mut put_attempts = 0;
         let server = thread::spawn(move || {
             while !halt.load(Ordering::Acquire) {
                 let Ok((mut socket, _)) = listener.accept() else {
@@ -438,10 +523,24 @@ mod tests {
                 let body = &bytes[end..end + len];
                 let hash = hex::encode(Sha256::digest(body));
                 assert_eq!(headers["x-amz-content-sha256"], hash);
-                let signed = ["host", "x-amz-content-sha256", "x-amz-date"]
-                    .into_iter()
-                    .map(|k| (k.to_string(), headers[k].clone()))
-                    .collect();
+                let mut signed = BTreeMap::from([
+                    ("host".into(), headers["host"].clone()),
+                    (
+                        "x-amz-content-sha256".into(),
+                        headers["x-amz-content-sha256"].clone(),
+                    ),
+                    ("x-amz-date".into(), headers["x-amz-date"].clone()),
+                ]);
+                if method == "PUT" {
+                    signed.insert(
+                        "x-amz-meta-vesper-blake3".into(),
+                        headers["x-amz-meta-vesper-blake3"].clone(),
+                    );
+                    assert_eq!(
+                        headers["x-amz-meta-vesper-blake3"],
+                        hex::encode(vesper_format::hash_bytes(body))
+                    );
+                }
                 assert_eq!(
                     headers["authorization"],
                     authorization(
@@ -455,16 +554,35 @@ mod tests {
                         &signed
                     )
                 );
+                let mut extra = String::new();
                 let (status, length) = if method == "PUT" {
+                    put_attempts += 1;
+                    if put_attempts == 1 {
+                        continue;
+                    } // Body consumed, connection lost.
+                    if put_attempts == 2 {
+                        write!(
+                            socket,
+                            "HTTP/1.1 503 Retry\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .unwrap();
+                        continue;
+                    }
+                    meta.lock()
+                        .unwrap()
+                        .insert(path.into(), headers["x-amz-meta-vesper-blake3"].clone());
                     data.lock().unwrap().insert(path.into(), body.to_vec());
                     *uploads.lock().unwrap() += 1;
                     (200, 0)
                 } else if let Some(value) = data.lock().unwrap().get(path) {
+                    if let Some(hash) = meta.lock().unwrap().get(path) {
+                        extra = format!("x-amz-meta-vesper-blake3: {hash}\r\n");
+                    }
                     (200, value.len())
                 } else {
                     (404, 0)
                 };
-                write!(socket, "HTTP/1.1 {status} Test\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").unwrap();
+                write!(socket, "HTTP/1.1 {status} Test\r\n{extra}Content-Length: {length}\r\nConnection: close\r\n\r\n").unwrap();
             }
         });
         let config = R2Config {
@@ -477,12 +595,23 @@ mod tests {
         let publisher =
             R2Publisher::new(config, "mock-access".into(), "mock-secret".into()).unwrap();
         let key = publisher.config.key("v 1", "pack+file").unwrap();
-        publisher.upload(&key, b"abc", false).unwrap();
-        publisher.upload(&key, b"xyz", false).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let path = staging.path().join("upload");
+        let upload = |key: &str, bytes: &[u8], dry| {
+            fs::write(&path, bytes).unwrap();
+            publisher.upload_file(key, &path, dry).unwrap();
+        };
+        upload(&key, b"abc", false);
+        upload(&key, b"abc", false);
         assert_eq!(*puts.lock().unwrap(), 1);
-        publisher.upload(&key, b"longer", false).unwrap();
-        publisher.upload("dry/new", b"new", true).unwrap();
+        upload(&key, b"xyz", false); // Same size, different content must overwrite.
         assert_eq!(*puts.lock().unwrap(), 2);
+        metadata.lock().unwrap().clear();
+        upload(&key, b"xyz", false); // Missing hash metadata also requires replacement.
+        assert_eq!(*puts.lock().unwrap(), 3);
+        upload(&key, b"longer", false);
+        upload("dry/new", b"new", true);
+        assert_eq!(*puts.lock().unwrap(), 4);
         assert_eq!(
             objects.lock().unwrap()["/bucket/game/v%201/pack%2Bfile"],
             b"longer"

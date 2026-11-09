@@ -102,19 +102,41 @@ HTTPS, with HTTP on `127.0.0.1` allowed for local tests. The public base include
 the prefix's public path. Objects use `<prefix>/<release_tag>/<asset_name>`, and
 the signed source template is `<public_base>/{release}/{pack_id}`.
 
-The mirror contains the manifest and every referenced pack, including reused
-packs owned by older releases. Same-size objects confirmed with HEAD are skipped;
-different sizes are overwritten. Missing objects use local pack files when
-available, otherwise anonymously downloaded GitHub Release assets. Local and
-recovered packs must match manifest length and BLAKE3 before upload. Every object
-is confirmed by HEAD before targets are written. Any recovery, upload or
-confirmation failure stops publication without changing targets. Successful
-publication signs GitHub at priority 0 and R2 at priority 1. Without mirror
-configuration, publication signs only GitHub.
+The mirror contains the manifest and packs referenced by every channel in targets,
+including reused packs owned by older releases. HEAD skips an object only when
+both size and `x-amz-meta-vesper-blake3` match; missing or different hash metadata
+requires replacement, including same-size republished manifests. The metadata
+header is included in SigV4 signed headers and checked again after upload.
+Current-channel files come from the local build. Other channel manifests are
+recovered anonymously from GitHub by their signed release tag and asset name,
+checked against targets size/BLAKE3, then decoded to enumerate packs. Missing
+packs use local files or streamed GitHub recovery into temporary files, with
+length/BLAKE3 verification before upload. Staging files are removed on success
+and failure. Any incomplete channel stops publication before targets change. Channels that
+bind different content to the same release/asset key require distinct tags.
+Successful publication signs GitHub at priority 0 and R2 at priority 1. Without
+mirror configuration, publication signs only GitHub.
 
-`--dry-run` performs HEAD checks and verified recovery reads, prints `skipped`
-or `would-upload` for each mirror object, and performs no upload or metadata
-write. It requires the same environment credentials to inspect the bucket.
+Uploads stream files in 64 KiB buffers after a streaming SHA-256 pass for SigV4;
+pack bodies are never loaded into memory in full. Connections have a 30-second
+deadline and transfers have a 60-second read/write idle deadline, with no total
+transfer limit. R2 and GitHub retry transport failures, HTTP 408/429 and all 5xx
+responses up to four attempts, waiting 250/500/1000 ms. Each upload attempt opens
+the file afresh. Before a GitHub upload retry, any same-name asset, including a
+starter asset, is deleted. If developer metadata publication fails after signing,
+the error identifies the unpublished local targets version and directs the caller
+to rerun `publish`; keep the local metadata directory for that rerun.
+
+`--dry-run` performs mirror HEAD checks and GitHub asset existence/size checks,
+prints `skipped`, `would-upload` or `would-recover-from-github`, and performs no
+pack or manifest body download, upload or metadata write. Local files can be
+hashed without network traffic. For retained remote channel manifests it lists
+the manifest recovery plan; their pack inventory and content verification run
+during actual publication because enumerating them requires reading the body.
+Dry-run requires the same environment credentials to inspect the bucket.
+`promote` rejects targets advertising R2 because it cannot verify mirror
+completeness; use `publish --channel <destination>` with the retained build and
+R2 settings instead. Both metadata hosting modes enforce the same rules.
 Clients probe enabled sources and use the fastest; players can disable `r2`
 in Settings. Mirror operators cannot authorize modified content: signed targets
 bind the manifest, and manifests bind pack/chunk content hashes.

@@ -1159,9 +1159,27 @@ fn publish_local(
                 &manifest_path,
                 &packs_dir,
                 &manifest,
-                |release, pack| {
-                    github.download_pack(remote.owner.unwrap(), remote.repo.unwrap(), release, pack)
+                |release, pack, path| {
+                    github.recover_pack(
+                        remote.owner.unwrap(),
+                        remote.repo.unwrap(),
+                        release,
+                        pack,
+                        path,
+                    )
                 },
+                true,
+            )?;
+            mirror_other_channels(
+                r2,
+                &github,
+                &remote,
+                index,
+                &manifest,
+                channel,
+                tag,
+                &manifest_path,
+                &packs_dir,
                 true,
             )?;
         }
@@ -1189,7 +1207,19 @@ fn publish_local(
                 &manifest_path,
                 &packs_dir,
                 &manifest,
-                |release, pack| publisher.download_pack(owner, repo, release, pack),
+                |release, pack, path| publisher.recover_pack(owner, repo, release, pack, path),
+                false,
+            )?;
+            mirror_other_channels(
+                r2,
+                &publisher,
+                &remote,
+                index,
+                &manifest,
+                channel,
+                tag,
+                &manifest_path,
+                &packs_dir,
                 false,
             )?;
         }
@@ -1206,7 +1236,8 @@ fn publish_local(
                 Some((owner, repo)),
                 remote.r2.as_ref().map(R2Config::url_template).as_deref(),
             )?;
-            publisher.publish_metadata(owner, repo, remote.metadata_tag, dir)?;
+            publisher.publish_metadata(owner, repo, remote.metadata_tag, dir).with_context(||
+                format!("local targets v{version} is signed but unpublished; rerun publish to publish it"))?;
             println!(
                 "metadata_release={} targets_version={version} (keep {} for the next publication)",
                 remote.metadata_tag,
@@ -1228,6 +1259,152 @@ fn publish_local(
         remote.owner.zip(remote.repo),
         remote.r2.as_ref().map(R2Config::url_template).as_deref(),
     )
+}
+
+/// All retained channels must be complete before the shared source is advertised.
+#[allow(clippy::too_many_arguments)]
+fn mirror_other_channels(
+    r2: &R2Publisher,
+    github: &GitHubPublisher,
+    remote: &PublishRemote<'_>,
+    index: Option<&std::path::Path>,
+    manifest: &Manifest,
+    current_channel: &str,
+    current_tag: &str,
+    manifest_path: &std::path::Path,
+    packs_dir: &std::path::Path,
+    dry_run: bool,
+) -> Result<()> {
+    let dir = index
+        .map(|p| p.join("apps").join(&manifest.app_id))
+        .unwrap_or_else(|| {
+            remote
+                .metadata_dir
+                .unwrap_or_else(|| std::path::Path::new("metadata"))
+                .to_path_buf()
+        });
+    let targets = dir.join("targets.json");
+    if !targets.is_file() {
+        return Ok(());
+    }
+    let targets: vesper_meta::Signed<AppTargetsSigned> = read_json(&targets)?;
+    let mut inventory = BTreeMap::new();
+    register_mirror_objects(&mut inventory, current_tag, manifest_path, manifest)?;
+    for (name, channel) in &targets.signed.channels {
+        if name == current_channel {
+            continue;
+        }
+        let entry = &channel.manifest;
+        if dry_run {
+            r2.check_remote_manifest(
+                &entry.release_tag,
+                &entry.asset_name,
+                entry.size,
+                &entry.blake3,
+            )?;
+            github.recover_asset(
+                remote.owner.unwrap(),
+                remote.repo.unwrap(),
+                &entry.release_tag,
+                &entry.asset_name,
+                &vesper_publish::r2::ObjectIdentity {
+                    size: entry.size,
+                    blake3: entry.blake3.clone(),
+                },
+                None,
+            )?;
+            continue;
+        }
+        let staging =
+            tempfile::tempdir_in(manifest_path.parent().context("manifest parent missing")?)?;
+        // Keep the original asset name for the mirror layout.
+        anyhow::ensure!(
+            std::path::Path::new(&entry.asset_name)
+                .file_name()
+                .and_then(|n| n.to_str())
+                == Some(&entry.asset_name),
+            "invalid channel manifest asset name"
+        );
+        let path = staging.path().join(&entry.asset_name);
+        github.recover_asset(
+            remote.owner.unwrap(),
+            remote.repo.unwrap(),
+            &entry.release_tag,
+            &entry.asset_name,
+            &vesper_publish::r2::ObjectIdentity {
+                size: entry.size,
+                blake3: entry.blake3.clone(),
+            },
+            Some(&path),
+        )?;
+        let other = load_manifest(&path)?;
+        anyhow::ensure!(
+            other.app_id == manifest.app_id,
+            "channel manifest app id mismatch"
+        );
+        register_mirror_objects(&mut inventory, &entry.release_tag, &path, &other)?;
+        r2.mirror(
+            &entry.release_tag,
+            &path,
+            packs_dir,
+            &other,
+            |release, pack, path| {
+                github.recover_pack(
+                    remote.owner.unwrap(),
+                    remote.repo.unwrap(),
+                    release,
+                    pack,
+                    path,
+                )
+            },
+            false,
+        )?;
+    }
+    Ok(())
+}
+
+fn register_mirror_objects(
+    inventory: &mut BTreeMap<(String, String), vesper_publish::r2::ObjectIdentity>,
+    tag: &str,
+    path: &std::path::Path,
+    manifest: &Manifest,
+) -> Result<()> {
+    let mut objects = vec![(
+        (
+            tag.to_string(),
+            path.file_name()
+                .context("manifest filename missing")?
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        vesper_publish::r2::ObjectIdentity {
+            size: fs::metadata(path)?.len(),
+            blake3: hex::encode(vesper_format::hash_file(path)?),
+        },
+    )];
+    objects.extend(manifest.packs.iter().map(|pack| {
+        (
+            (
+                pack.release_tag.as_deref().unwrap_or(tag).into(),
+                pack.pack_id.clone(),
+            ),
+            vesper_publish::r2::ObjectIdentity {
+                size: pack.size,
+                blake3: hex::encode(pack.hash),
+            },
+        )
+    }));
+    for (key, identity) in objects {
+        if let Some(previous) = inventory.insert(key.clone(), identity) {
+            anyhow::ensure!(
+                inventory[&key] == previous,
+                "channels reference conflicting mirror content at {}/{}; use distinct release tags",
+                key.0,
+                key.1
+            );
+        }
+    }
+    Ok(())
 }
 
 fn github_publisher(remote: &PublishRemote<'_>) -> Result<GitHubPublisher> {
@@ -1375,6 +1552,8 @@ fn promote_channel(from: &str, to: &str, index: &std::path::Path) -> Result<()> 
     let targets_path = single_targets_path(index)?;
     let mut doc: vesper_meta::Signed<AppTargetsSigned> = read_json(&targets_path)
         .with_context(|| format!("read targets {}", targets_path.display()))?;
+    anyhow::ensure!(!doc.signed.sources.iter().any(|s| s.kind == "r2"),
+        "promote with an R2 source requires mirror verification; use publish --channel <destination> with R2 settings to verify all channels");
     let channel = doc
         .signed
         .channels
@@ -2145,6 +2324,28 @@ mod tests {
             assert_eq!(root.signed.roles[role].keyids, vec![key.keyid.clone()]);
         }
         assert_eq!(root.signed.keys[&key.keyid], key.public_hex());
+    }
+
+    #[test]
+    fn conflicting_channel_objects_require_distinct_release_tags() {
+        let staging = tempfile::tempdir().unwrap();
+        let path = staging.path().join("manifest.cbor.zst");
+        fs::write(&path, b"first").unwrap();
+        let manifest = Manifest::new(
+            "demo".into(),
+            "windows-x64".into(),
+            "1".into(),
+            vesper_format::ChunkingParams {
+                min_size: 64,
+                avg_size: 256,
+                max_size: 1024,
+            },
+        );
+        let mut inventory = BTreeMap::new();
+        register_mirror_objects(&mut inventory, "r1", &path, &manifest).unwrap();
+        fs::write(&path, b"other").unwrap();
+        let error = register_mirror_objects(&mut inventory, "r1", &path, &manifest).unwrap_err();
+        assert!(error.to_string().contains("conflicting mirror content"));
     }
 
     #[test]

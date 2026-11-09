@@ -15,6 +15,10 @@ use std::time::Duration;
 #[derive(Default)]
 struct Remote {
     mirror: BTreeMap<String, Vec<u8>>,
+    mirror_hashes: BTreeMap<String, String>,
+    disconnect_metadata_once: bool,
+    disconnect_api_once: bool,
+    reject_metadata: bool,
     reject_mirror: bool,
     created: bool,
     metadata_created: bool,
@@ -83,6 +87,10 @@ impl GitHubMock {
                 remote
                     .requests
                     .push((method.into(), path.into(), body.clone()));
+                if method == "GET" && remote.disconnect_api_once {
+                    remote.disconnect_api_once = false;
+                    continue;
+                }
                 let release = json!({"id":2,"tag_name":"r2","upload_url":format!("{origin}/uploads{{?name,label}}"),"assets_url":format!("{origin}/assets")});
                 let mut status = "200 OK";
                 let mut extra = String::new();
@@ -93,10 +101,27 @@ impl GitHubMock {
                         status = "503 Unavailable";
                         Vec::new()
                     } else if method == "PUT" {
+                        let hash = header
+                            .lines()
+                            .find_map(|line| {
+                                let (key, value) = line.split_once(':')?;
+                                key.eq_ignore_ascii_case("x-amz-meta-vesper-blake3")
+                                    .then(|| value.trim().to_string())
+                            })
+                            .unwrap();
+                        remote.mirror_hashes.insert(path.into(), hash);
                         remote.mirror.insert(path.into(), body);
                         Vec::new()
                     } else if let Some(value) = remote.mirror.get(path) {
-                        extra = format!("X-Mock-Size: {}\r\n", value.len());
+                        extra = format!(
+                            "X-Mock-Size: {}\r\nx-amz-meta-vesper-blake3: {}\r\n",
+                            value.len(),
+                            remote
+                                .mirror_hashes
+                                .get(path)
+                                .map(String::as_str)
+                                .unwrap_or("")
+                        );
                         value.clone()
                     } else {
                         status = "404 Not Found";
@@ -120,6 +145,13 @@ impl GitHubMock {
                         path.trim_start_matches("/metadata-uploads?name=").into(),
                         body,
                     );
+                    if remote.disconnect_metadata_once {
+                        remote.disconnect_metadata_once = false;
+                        continue;
+                    }
+                    if remote.reject_metadata {
+                        status = "503 Unavailable";
+                    }
                     b"{}".to_vec()
                 } else if path.ends_with("/releases/tags/r2") {
                     if !remote.created {
@@ -152,15 +184,28 @@ impl GitHubMock {
                     } else {
                         &remote.assets
                     };
-                    let assets: Vec<_> = source.iter().enumerate().map(|(id, (name, bytes))| json!({"id":id,"name":name,"size":bytes.len(),"browser_download_url":format!("{origin}/download/{name}")})).collect();
+                    let assets: Vec<_> = source.iter().enumerate().map(|(id, (name, bytes))| json!({"id":id,"name":name,"size":bytes.len(),"browser_download_url":format!("{origin}/download/{}/{name}", if path == "/old-assets" { "r1" } else { "r2" })})).collect();
                     serde_json::to_vec(&assets).unwrap()
                 } else if let Some(name) = path.strip_prefix("/download/") {
                     assert!(!header.to_ascii_lowercase().contains("authorization:"));
-                    let bytes = remote
-                        .assets
-                        .get(name)
-                        .or_else(|| remote.old_assets.get(name))
+                    let (release, name) = name.split_once('/').unwrap();
+                    let bytes = if release == "r1" {
+                        &remote.old_assets
+                    } else {
+                        &remote.assets
+                    }
+                    .get(name)
+                    .unwrap();
+                    if method == "HEAD" {
+                        let result = bytes.clone();
+                        write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            result.len()
+                        )
                         .unwrap();
+                        continue;
+                    }
                     let range = header
                         .lines()
                         .find_map(|line| {
@@ -278,6 +323,8 @@ fn publish_self_hosted_creates_and_replaces_metadata_release_assets() {
         "--upload-base",
         &server.base,
     ];
+    server.remote.lock().unwrap().disconnect_metadata_once = true;
+    server.remote.lock().unwrap().disconnect_api_once = true;
     let first = vesper(&args);
     let stdout = String::from_utf8_lossy(&first.stdout).into_owned();
     assert!(stdout
@@ -294,6 +341,12 @@ fn publish_self_hosted_creates_and_replaces_metadata_release_assets() {
             .map(|(_, _, body)| serde_json::from_slice(body).unwrap())
             .collect();
         assert_eq!(created.len(), 2);
+        assert_eq!(remote.metadata_assets["store.json"], b"{}");
+        assert!(remote
+            .requests
+            .iter()
+            .filter(|(m, p, _)| m == "POST" && p == "/metadata-uploads?name=store.json")
+            .all(|(_, _, body)| body == b"{}"));
         for release in created {
             // Only the mutable metadata release opts out of becoming "Latest".
             let metadata = release["tag_name"] == "vesper-metadata";
@@ -324,7 +377,7 @@ fn publish_self_hosted_creates_and_replaces_metadata_release_assets() {
             .iter()
             .filter(|(method, _, _)| method == "DELETE")
             .count(),
-        3
+        4
     );
     assert_eq!(
         remote.metadata_assets["description.md"],
@@ -340,6 +393,12 @@ fn publish_self_hosted_creates_and_replaces_metadata_release_assets() {
         2
     );
     assert_ne!(old["targets.json"], remote.metadata_assets["targets.json"]);
+    drop(remote);
+    server.remote.lock().unwrap().reject_metadata = true;
+    let failed = vesper(&args);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr)
+        .contains("local targets v3 is signed but unpublished; rerun publish"));
 }
 
 #[test]
@@ -615,7 +674,7 @@ fn r2_publish_mirrors_old_packs_and_preserves_targets_on_failure() {
     assert!(server.remote.lock().unwrap().requests.is_empty());
     args.push("--dry-run");
     let dry = invoke(&args, true);
-    assert!(String::from_utf8_lossy(&dry.stdout).contains("would-upload game/r1/"));
+    assert!(String::from_utf8_lossy(&dry.stdout).contains("would-recover-from-github game/r1/"));
     assert_success(dry);
     assert!(!metadata.join("targets.json").exists());
     assert!(server
@@ -626,6 +685,13 @@ fn r2_publish_mirrors_old_packs_and_preserves_targets_on_failure() {
         .iter()
         .all(|(m, _, _)| m == "GET" || m == "HEAD"));
     assert!(server.remote.lock().unwrap().mirror.is_empty());
+    assert!(server
+        .remote
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .all(|(method, path, _)| method != "GET" || !path.starts_with("/download/")));
     args.pop();
     assert_success(invoke(&args, true));
     let targets = fs::read(metadata.join("targets.json")).unwrap();
@@ -720,4 +786,142 @@ fn r2_config_cli_overrides_file_and_self_hosted_sources() {
     assert!(remote
         .mirror
         .contains_key("/mirror/game/r2/manifest.cbor.zst"));
+}
+#[test]
+fn r2_all_channels_are_verified_before_targets_and_promote_requires_publish() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input");
+    let old = temp.path().join("old");
+    let current = temp.path().join("current");
+    let index = temp.path().join("index");
+    let metadata = index.join("apps/test.publish");
+    fs::create_dir_all(&metadata).unwrap();
+    fs::write(metadata.join("store.json"), b"{}").unwrap();
+    fs::write(metadata.join("description.md"), b"All channels").unwrap();
+    fs::create_dir_all(&input).unwrap();
+    let pack = |output: &Path, version: &str| {
+        assert_success(vesper(&[
+            "pack",
+            "--input",
+            input.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--app-id",
+            "test.publish",
+            "--platform",
+            "windows-x64",
+            "--version",
+            version,
+        ]));
+    };
+    fs::write(input.join("game.bin"), vec![42; 8192]).unwrap();
+    pack(&old, "r1");
+    assert_success(vesper(&[
+        "publish",
+        old.to_str().unwrap(),
+        "--index",
+        index.to_str().unwrap(),
+        "--channel",
+        "beta",
+    ]));
+    fs::write(input.join("game.bin"), vec![73; 8192]).unwrap();
+    pack(&current, "r2");
+    let server = GitHubMock::new();
+    let old_manifest = fs::read(old.join("manifest.cbor.zst")).unwrap();
+    {
+        let mut remote = server.remote.lock().unwrap();
+        remote
+            .old_assets
+            .insert("manifest.cbor.zst".into(), old_manifest.clone());
+        for file in fs::read_dir(old.join("packs")).unwrap() {
+            let file = file.unwrap();
+            remote.old_assets.insert(
+                file.file_name().to_string_lossy().into_owned(),
+                fs::read(file.path()).unwrap(),
+            );
+        }
+    }
+    let invoke = |dry: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_vesper"));
+        command
+            .current_dir(temp.path())
+            .args([
+                "publish",
+                current.to_str().unwrap(),
+                "--index",
+                index.to_str().unwrap(),
+                "--owner",
+                "owner",
+                "--repo",
+                "repo",
+                "--token",
+                "mock-token",
+                "--api-base",
+                &server.base,
+                "--upload-base",
+                &server.base,
+                "--r2-bucket",
+                "mirror",
+                "--r2-endpoint",
+                &server.base,
+                "--r2-public-base",
+                "https://cdn.example.com",
+                "--channel",
+                "stable",
+            ])
+            .env("VESPER_DEV_KEY", "13".repeat(32))
+            .env("VESPER_R2_ACCESS_KEY_ID", "mock-access")
+            .env("VESPER_R2_SECRET_ACCESS_KEY", "mock-secret");
+        if dry {
+            command.arg("--dry-run");
+        }
+        command.output().unwrap()
+    };
+    assert_success(invoke(true));
+    assert!(server
+        .remote
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .all(|(m, p, _)| m != "GET" || !p.starts_with("/download/")));
+    assert_success(invoke(false));
+    let targets = fs::read(metadata.join("targets.json")).unwrap();
+    {
+        let remote = server.remote.lock().unwrap();
+        for (name, bytes) in &remote.old_assets {
+            assert_eq!(&remote.mirror[&format!("/mirror/r1/{name}")], bytes);
+        }
+        assert!(remote.mirror.contains_key("/mirror/r2/manifest.cbor.zst"));
+    }
+    let promoted = vesper(&[
+        "promote",
+        "beta",
+        "stable",
+        "--index",
+        index.to_str().unwrap(),
+    ]);
+    assert!(!promoted.status.success());
+    assert!(String::from_utf8_lossy(&promoted.stderr).contains("mirror verification"));
+    assert_eq!(fs::read(metadata.join("targets.json")).unwrap(), targets);
+    {
+        let mut remote = server.remote.lock().unwrap();
+        remote.mirror.clear();
+        remote.old_assets.get_mut("manifest.cbor.zst").unwrap()[0] ^= 1;
+    }
+    let failed = invoke(false);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("length/hash mismatch"));
+    assert_eq!(fs::read(metadata.join("targets.json")).unwrap(), targets);
+    {
+        let mut remote = server.remote.lock().unwrap();
+        remote
+            .old_assets
+            .insert("manifest.cbor.zst".into(), old_manifest);
+        remote
+            .old_assets
+            .retain(|name, _| !name.ends_with(".vpack"));
+    }
+    assert!(!invoke(false).status.success());
+    assert_eq!(fs::read(metadata.join("targets.json")).unwrap(), targets);
 }

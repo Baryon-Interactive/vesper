@@ -83,7 +83,7 @@ replace all example trust keys before deployment.
 
 Optional R2 mirrors are configured by each developer, using the
 [publishing options](../docs/publishing.md#optional-r2-mirror). Signed targets
-contain GitHub at priority 0 and a complete R2 mirror at priority 1. Clients
+contain GitHub at priority 0 and an R2 mirror of all channels at priority 1. Clients
 probe enabled sources and select the fastest; priority establishes the initial
 order and resolves ties. Central aggregation requires no R2 credentials and
 continues to verify the developer's signed bundle.

@@ -25,5 +25,4 @@ walkdir.workspace = true
 zstd.workspace = true
 windows-sys.workspace = true
 
-[dev-dependencies]
 tempfile.workspace = true

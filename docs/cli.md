@@ -66,7 +66,7 @@ signature chain for you. Dry-run fields include `changed_bytes`, `download_bytes
 | --- | --- |
 | `publish` | Read a packed directory or manifest; `--owner`, `--repo`, `--tag`, `--channel`; `--metadata-dir` (default `./metadata`) and `--metadata-tag` (default `vesper-metadata`) for self-hosting, or `--index` for repository hosting; `--dry-run` previews |
 | `publish-github` | Lower-level upload with `--owner`, `--repo`, `--tag`, `--manifest`, `--packs-dir`; optional `--index` and `--channel` |
-| `promote` | Copy a channel entry: positional source/destination channels and `--index` |
+| `promote` | Copy a channel entry: positional source/destination channels and `--index`; R2 sources require `publish --channel` instead |
 | `rollback` | Decrement the channel metadata version: positional channel and `--index`; does not select a previous manifest |
 | `sign` | Re-sign application targets (recomputes store hashes) or flat targets with `--targets` and optional `--key-file` |
 | `gc` | Report packs in `<index>/packs`; `--index` required, `--yes` deletes reported packs |
@@ -112,10 +112,18 @@ GitHub-backed mirror, in both `--metadata-dir` and `--index` modes.
 
 Only `VESPER_R2_ACCESS_KEY_ID` and `VESPER_R2_SECRET_ACCESS_KEY` supply credentials.
 The publisher uses path-style SigV4 PUT/HEAD, region `auto`, service `s3`.
-HEAD skips equal-size objects and confirms every upload. Reused packs missing
-locally are downloaded from their original GitHub release and hash verified.
-Publication fails before targets change if the mirror is incomplete. `--dry-run`
-prints object upload/skip plans using read-only HEAD and recovery requests.
+HEAD compares size and signed BLAKE3 object metadata before skipping and after
+uploading. All targets channels, their verified manifests and every referenced
+pack must be mirrored before signing. Recovery and uploads stream through files;
+30-second connection and 60-second read/write idle deadlines permit long uploads.
+Transport errors, 408/429 and 5xx responses use four attempts with exponential
+backoff; GitHub retries delete same-name assets and reopen files from byte zero.
+A metadata failure identifies the signed but unpublished local targets version;
+rerun `publish` with the retained metadata directory. `promote` rejects R2-backed
+targets; use `publish --channel <destination>` with R2 settings for verification.
+`--dry-run` prints `skipped`, `would-upload` and `would-recover-from-github`, uses
+HEAD for asset checks, and never downloads pack/manifest bodies. Retained remote
+manifest pack inventories are verified during actual publication.
 See [R2 setup and pricing](publishing.md#optional-r2-mirror).
 
 ## Index maintenance

@@ -1,6 +1,7 @@
 //! GitHub Releases publisher for developer-owned pack repositories.
 
 pub mod r2;
+mod transfer;
 
 use anyhow::{Context, Result};
 use reqwest::blocking::{Client, Response};
@@ -66,31 +67,84 @@ pub fn token_from_env_or_gh() -> Result<String> {
 }
 
 impl GitHubPublisher {
-    /// Download an immutable pack without forwarding publishing credentials.
-    pub fn download_pack(
+    /// Public object recovery never forwards publishing credentials.
+    pub fn recover_asset(
+        &self,
+        owner: &str,
+        repo: &str,
+        tag: &str,
+        name: &str,
+        identity: &r2::ObjectIdentity,
+        destination: Option<&Path>,
+    ) -> Result<()> {
+        let size = identity.size;
+        let release = self
+            .get_release(owner, repo, tag)?
+            .context("asset release is missing")?;
+        let asset = self
+            .list_assets(&release)?
+            .into_iter()
+            .find(|a| a.name == name)
+            .context("asset is missing from release")?;
+        anyhow::ensure!(asset.size == size, "asset length/hash mismatch");
+        if let Some(path) = destination {
+            let mut last = None;
+            for attempt in 0..4 {
+                match transfer::download(&asset.browser_download_url, path, size) {
+                    Ok(()) => {
+                        last = None;
+                        break;
+                    }
+                    Err(error) => {
+                        last = Some(error);
+                        if attempt < 3 {
+                            thread::sleep(Duration::from_millis(250 << attempt));
+                        }
+                    }
+                }
+            }
+            if let Some(error) = last {
+                return Err(error.context("recover GitHub asset after retries"));
+            }
+            anyhow::ensure!(
+                hex::encode(vesper_format::hash_file(path)?) == identity.blake3,
+                "asset length/hash mismatch"
+            );
+        } else {
+            let response = self
+                .request(|| Ok(self.client.head(&asset.browser_download_url).send()?))?
+                .error_for_status()?;
+            anyhow::ensure!(
+                response
+                    .headers()
+                    .get(CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    == Some(size),
+                "asset HEAD length mismatch"
+            );
+        }
+        Ok(())
+    }
+    pub fn recover_pack(
         &self,
         owner: &str,
         repo: &str,
         tag: &str,
         pack: &vesper_format::PackEntry,
-    ) -> Result<Vec<u8>> {
-        let release = self
-            .get_release(owner, repo, tag)?
-            .context("pack release is missing")?;
-        let asset = self
-            .list_assets(&release)?
-            .into_iter()
-            .find(|a| a.name == pack.pack_id)
-            .context("pack asset is missing")?;
-        let response = self
-            .client
-            .get(&asset.browser_download_url)
-            .header(RANGE, format!("bytes=0-{}", pack.size.saturating_sub(1)))
-            .send()?
-            .error_for_status()?;
-        let bytes = response.bytes()?.to_vec();
-        r2::verify_pack(pack, &bytes)?;
-        Ok(bytes)
+        destination: Option<&Path>,
+    ) -> Result<()> {
+        self.recover_asset(
+            owner,
+            repo,
+            tag,
+            &pack.pack_id,
+            &r2::ObjectIdentity {
+                size: pack.size,
+                blake3: hex::encode(pack.hash),
+            },
+            destination,
+        )
     }
 
     pub fn new(token: impl Into<String>) -> Result<Self> {
@@ -102,6 +156,7 @@ impl GitHubPublisher {
             client: Client::builder()
                 .user_agent(concat!("vesper/", env!("CARGO_PKG_VERSION")))
                 .pool_max_idle_per_host(0)
+                .connect_timeout(Duration::from_secs(30))
                 .timeout(Duration::from_secs(300))
                 .build()?,
             api_base: "https://api.github.com".into(),
@@ -376,18 +431,47 @@ impl GitHubPublisher {
         }
         url.push_str("?name=");
         url.push_str(&urlencoding::encode(name));
-        let file = File::open(path).with_context(|| format!("open upload {}", path.display()))?;
-        let response = self.request(|| {
-            Ok(self
-                .request_builder(self.client.post(&url))
-                .header(CONTENT_TYPE, "application/octet-stream")
-                .header(CONTENT_LENGTH, bytes)
-                .body(file.try_clone().context("clone upload file")?)
-                .send()?)
-        })?;
-        response
-            .error_for_status()
-            .with_context(|| format!("upload GitHub asset {name}"))?;
+        for attempt in 0..4 {
+            if attempt > 0 {
+                // A disconnected upload can leave a starter or complete asset behind.
+                for asset in self
+                    .list_assets(release)?
+                    .into_iter()
+                    .filter(|a| a.name == name)
+                {
+                    let url = format!(
+                        "{}/releases/assets/{}",
+                        release
+                            .assets_url
+                            .split("/releases/")
+                            .next()
+                            .filter(|base| *base != release.assets_url)
+                            .unwrap_or(&self.api_base),
+                        asset.id
+                    );
+                    self.request(|| Ok(self.request_builder(self.client.delete(&url)).send()?))?
+                        .error_for_status()?;
+                }
+            }
+            let result = transfer::runtime()?.block_on(async {
+                let request = transfer::client()?
+                    .post(&url)
+                    .header(AUTHORIZATION, format!("Bearer {}", self.token))
+                    .header(ACCEPT, "application/vnd.github+json")
+                    .header(USER_AGENT, concat!("vesper/", env!("CARGO_PKG_VERSION")))
+                    .header(CONTENT_TYPE, "application/octet-stream")
+                    .header(CONTENT_LENGTH, bytes);
+                transfer::send_file(request, Some(path), transfer::IDLE).await
+            });
+            match result {
+                Ok((status, _)) if status.is_success() => return Ok(()),
+                Ok((status, _)) if !r2::retry_status(status.as_u16()) =>
+                    anyhow::bail!("upload GitHub asset {name} failed (HTTP {})", status.as_u16()),
+                _ if attempt < 3 => thread::sleep(Duration::from_millis(250 << attempt)),
+                _ => anyhow::bail!("upload GitHub asset {name} failed after retries (transport or retryable HTTP status)"),
+            }
+        }
+
         Ok(())
     }
 
@@ -436,19 +520,21 @@ impl GitHubPublisher {
     where
         F: FnMut() -> Result<Response>,
     {
-        let mut last_status = None;
         for attempt in 0..4 {
-            let response = send()?;
-            if !matches!(
-                response.status().as_u16(),
-                408 | 429 | 500 | 502 | 503 | 504
-            ) {
-                return Ok(response);
+            match send() {
+                Ok(response) if !r2::retry_status(response.status().as_u16()) => {
+                    return Ok(response)
+                }
+                Err(error) if error.downcast_ref::<reqwest::Error>().is_none() => {
+                    return Err(error)
+                }
+                _ if attempt < 3 => thread::sleep(Duration::from_millis(250 << attempt)),
+                _ => anyhow::bail!(
+                    "GitHub request failed after retries (transport or retryable HTTP status)"
+                ),
             }
-            last_status = Some(response.status());
-            thread::sleep(Duration::from_millis(250 * 2u64.pow(attempt)));
         }
-        anyhow::bail!("GitHub request failed after retries: {:?}", last_status)
+        unreachable!()
     }
 }
 
