@@ -57,15 +57,12 @@ Tests use `test/fixtures/index`, not the live `apps/` catalogue. The merge shell
 
 All four binary-consuming index workflows download `vesper-cli-linux-x64` from the Releases of
 `Baryon-Interactive/vesper`, check its pinned SHA-256 before execution, and never need
-a source checkout. The template uses the pre-publication
-placeholders `VESPER_VERSION: '0.7.0'` and
-`VESPER_SHA256: '0000000000000000000000000000000000000000000000000000000000000000'`
-in all four workflows. Before using the signing pipeline, the maintainer must
-build and publish vesper 0.7.0 and update the checksum in all four workflows from
-the reviewed `SHA256SUMS`. The static workflow tests warn about the placeholder
-without failing; workflow execution fails closed until the real checksum is
-supplied. Keep `VESPER_RELEASES_REPO` identical across workflows. No publication
-or pin migration is performed automatically.
+a source checkout. All four workflows pin `VESPER_VERSION: '0.7.0'` and the
+`vesper-cli-linux-x64` SHA-256 from that release's `SHA256SUMS`. To move to a newer
+release, update the version and checksum together in all four workflows. The static
+workflow tests warn about an all-zero placeholder without failing; workflow
+execution fails closed when the checksum does not match. Keep `VESPER_RELEASES_REPO`
+identical across workflows. No publication or pin migration is performed automatically.
 
 Build and manual publication instructions are in [the binary release guide](../docs/releases.md). Copy that guide alongside the template if using this directory as a standalone repository. Only the maintainer publishes binary assets; no source checkout or source token is required in index Actions.
 
