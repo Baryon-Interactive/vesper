@@ -496,7 +496,7 @@ impl Installer {
             if let Some(backup) = backup {
                 if target.exists() && !backup.exists() {
                     if let Some(parent) = backup.parent() {
-                        ensure_safe_parent(parent)?;
+                        ensure_safe_parent(&self.root, parent)?;
                     }
                     rename_with_retry(&target, &backup)
                         .with_context(|| format!("backup {}", target.display()))?;
@@ -506,7 +506,7 @@ impl Installer {
                 let staged = self.root.join(path_to_os(staged));
                 if staged.exists() {
                     if let Some(parent) = target.parent() {
-                        ensure_safe_parent(parent)?;
+                        ensure_safe_parent(&self.root, parent)?;
                     }
                     rename_with_retry(&staged, &target)
                         .with_context(|| format!("install {}", target.display()))?;
@@ -617,9 +617,15 @@ fn clear_chunk_store(control: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_safe_parent(parent: &Path) -> Result<()> {
-    let mut current = PathBuf::new();
-    for component in parent.components() {
+/// Refuses to write through a symlink or reparse point inside the install root. Directories above
+/// the root are the user's choice (macOS `/var` and `/tmp` are themselves symlinks), so only the
+/// components below `root` are checked.
+fn ensure_safe_parent(root: &Path, parent: &Path) -> Result<()> {
+    let relative = parent
+        .strip_prefix(root)
+        .with_context(|| format!("{} is outside the install root", parent.display()))?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
         current.push(component.as_os_str());
         if current.exists() && fs::symlink_metadata(&current)?.file_type().is_symlink() {
             anyhow::bail!(
@@ -905,6 +911,24 @@ mod tests {
         assert_eq!(mode_of("packed-exec"), 0o755);
         assert_eq!(mode_of("plain"), 0o644);
         assert_eq!(mode_of("launcher"), 0o755);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_root_below_a_symlink_is_allowed_but_symlinks_inside_it_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir_all(real.join("outside")).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
+        let root = dir.path().join("link").join("Game");
+        fs::create_dir_all(&root).unwrap();
+        ensure_safe_parent(&root, &root.join("data").join("maps")).unwrap();
+        assert!(real.join("Game").join("data").join("maps").is_dir());
+        std::os::unix::fs::symlink(real.join("outside"), root.join("escape")).unwrap();
+        let error = ensure_safe_parent(&root, &root.join("escape").join("x")).unwrap_err();
+        assert!(error.to_string().contains("symlink parent is not allowed"), "{error}");
+        assert!(!real.join("outside").join("x").exists());
+        assert!(ensure_safe_parent(&root, &dir.path().join("elsewhere")).is_err());
     }
 
     use super::*;
