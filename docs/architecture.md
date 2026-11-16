@@ -42,6 +42,9 @@ overrides that directory. Installation control files are in `.vesper`.
 The client's trusted bootstrap root is
 [`crates/vesper-client/config/root.json`](../crates/vesper-client/config/root.json);
 replace it with the offline production root before building a pinned client.
+It is the trust anchor only: the client follows renewed or rotated roots published
+as `<N>.root.json` and caches the newest verified root under `trust/`
+([root renewal](index-layout.md#root-renewal-and-rotation)).
 
 Private platform modules contain session credential access and game process
 launch/backup cleanup. Windows Credential Manager calls are isolated with

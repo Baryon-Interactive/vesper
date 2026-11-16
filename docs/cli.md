@@ -144,7 +144,11 @@ progress suppresses that hedge. See [source selection](architecture.md#download-
 | `route-add` | Register `--app`, `--pubkey` and optional `--metadata-url` in `--index`; requires offline signing next |
 | `aggregate` | Fetch developer bundles in `--index`; per-app `updated` / `unchanged` / `rejected: <reason>`, also in `GITHUB_STEP_SUMMARY`; rejected apps retain old files and do not fail other apps |
 | `route-sign` | Sign routes with `--root-key-file`; repeat the command with required root keys |
-| `verify` | Verify `--index`; repeat `--app`, use `--previous` for monotonic checks; `--targets-only` is for untrusted pre-signing PR feedback |
+| `root-keygen` | Write a new offline root key to `--out` (never overwrites) and print its public key |
+| `root-draft` | Draft the next root of `--index` as `root.draft.json`; `--expires-days`, repeatable `--add-root-key` / `--remove-root-key`, `--threshold`, `--online-pubkey` |
+| `root-sign` | Add the `--key-file` signature to `--draft`; repeat for each previous and new root key holder |
+| `root-publish` | Verify the draft chains from `root.json` in `--index`, then write `<N>.root.json` and `root.json` ([root renewal](index-layout.md#root-renewal-and-rotation)) |
+| `verify` | Verify `--index` including its versioned root chain; repeat `--app`, use `--previous` for monotonic and root-chain checks; `--targets-only` is for untrusted pre-signing PR feedback |
 | `pending-snapshots` | List apps with changed targets or snapshots within two days of expiry |
 | `snapshot` | Renew changed/near-expiry `--app` in `--index` and its timestamp with `VESPER_ONLINE_KEY` |
 | `timestamp` | Renew timestamps in `--index --all` with the online key |

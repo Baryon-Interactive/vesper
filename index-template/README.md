@@ -23,7 +23,7 @@ Offline maintainers sign `routes.json` with the platform root threshold. Develop
 
 `verify-pr.yml` uses `pull_request` without secrets. Its checks provide fast feedback to contributors; a PR can change those checks, so their success alone never authorizes a merge. `merge.yml` uses `workflow_run` and checks out only the repository default branch with persisted credentials disabled. Its trusted `scripts/check-pr-files.mjs` independently checks the entire paginated PR file list, including old rename paths, before merging. It refuses incomplete file lists and verifies the PR is open, targets the default branch of this repository, and has the exact `workflow_run.head_sha`.
 
-Automatic merge permits only `store.json`, `description.md`, and `targets.json` under one `apps/<app_id>/` directory for routes without `metadata_url`. A hosted app always requires maintainer handling for app PRs; verify-pr checks both base and proposed routes. The `maintainer-approved` label permits verification feedback but does not authorize automatic merging. Empty diffs, changes to two apps, `routes.json`, `.github/`, `scripts/`, `schemas/`, `root.json`, and every other path require a maintainer merge; the workflow logs the reason. A `routes.json` change requires the `maintainer-approved` label for PR feedback and cannot merge automatically. `--match-head-commit` prevents merging a head changed after inspection. For fork PRs without a `workflow_run.pull_requests` entry, the job finds the open PR by head repository, branch, and exact head SHA. It never checks out PR code or downloads PR artifacts with merge credentials.
+Automatic merge permits only `store.json`, `description.md`, and `targets.json` under one `apps/<app_id>/` directory for routes without `metadata_url`. A hosted app always requires maintainer handling for app PRs; verify-pr checks both base and proposed routes. The `maintainer-approved` label permits verification feedback but does not authorize automatic merging. Empty diffs, changes to two apps, `routes.json`, `.github/`, `scripts/`, `schemas/`, `root.json`, `<N>.root.json`, and every other path require a maintainer merge; the workflow logs the reason. A `routes.json`, `root.json` or `<N>.root.json` change requires the `maintainer-approved` label for PR feedback and cannot merge automatically. `--match-head-commit` prevents merging a head changed after inspection. For fork PRs without a `workflow_run.pull_requests` entry, the job finds the open PR by head repository, branch, and exact head SHA. It never checks out PR code or downloads PR artifacts with merge credentials.
 
 `aggregate.yml` runs every 15 minutes (`*/15 * * * *`) and by manual dispatch.
 It checks out `main` without persisted credentials, holds no online key and calls
@@ -77,6 +77,24 @@ highest historical online versions. See
 [version recovery and client verification](../docs/index-layout.md#online-version-recovery).
 The example and fixture use a public test-only signing seed (32 bytes of `0x2a`);
 replace all example trust keys before deployment.
+
+## Root renewal and key rotation
+
+The root expires (one year after `vesper index init`), so renew it before then.
+Clients accept a new root without an update when it is published as
+`<N>.root.json` next to `root.json` and signed by a threshold of the previous
+root's keys and a threshold of its own. Offline holders run
+`vesper index root-draft`, `root-sign` (once per key) and `root-publish`;
+after replacing root keys, re-sign `routes.json` with `route-sign`. Commit
+`root.json`, every `<N>.root.json` and `routes.json` in one maintainer PR with
+the `maintainer-approved` label; `verify-pr` then checks that the new chain
+extends the base `root.json`, and `build-api.mjs` copies the versioned roots and a
+`404.html` into `dist` so Pages serves them and ends the chain with a real 404.
+Never delete old `<N>.root.json` files: older clients chain through them. See
+[root renewal and rotation](../docs/index-layout.md#root-renewal-and-rotation) for the
+client rules and the full command sequence. The `root-*` commands and the chain
+check in `index verify` need a Vesper release newer than 0.7.0; 0.7.0 only
+checks that `root.json` is self-signed.
 
 Optional R2 mirrors are configured by each developer, using the
 [publishing options](../docs/publishing.md#optional-r2-mirror). Signed targets
