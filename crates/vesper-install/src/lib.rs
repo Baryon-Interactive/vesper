@@ -926,7 +926,10 @@ mod tests {
         assert!(real.join("Game").join("data").join("maps").is_dir());
         std::os::unix::fs::symlink(real.join("outside"), root.join("escape")).unwrap();
         let error = ensure_safe_parent(&root, &root.join("escape").join("x")).unwrap_err();
-        assert!(error.to_string().contains("symlink parent is not allowed"), "{error}");
+        assert!(
+            error.to_string().contains("symlink parent is not allowed"),
+            "{error}"
+        );
         assert!(!real.join("outside").join("x").exists());
         assert!(ensure_safe_parent(&root, &dir.path().join("elsewhere")).is_err());
     }
