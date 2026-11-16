@@ -89,7 +89,9 @@ try {
     if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw "Unexpected Linux version: $actual" }
     Copy-Item -LiteralPath $linuxBinary -Destination (Join-Path $output 'vesper-linux-x64')
     Copy-Item -LiteralPath $windowsBinary -Destination (Join-Path $output 'vesper-windows-x64.exe')
-    $sums = foreach ($name in @('vesper-linux-x64', 'vesper-windows-x64.exe')) {
+    # License texts come from the archived commit, so they match the source of the binaries.
+    foreach ($name in @('LICENSE', 'NOTICE')) { Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $output $name) }
+    $sums = foreach ($name in @('vesper-linux-x64', 'vesper-windows-x64.exe', 'LICENSE', 'NOTICE')) {
         $hash = (Get-FileHash -LiteralPath (Join-Path $output $name) -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $name"
     }

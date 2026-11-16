@@ -26,7 +26,8 @@ rejects a dirty working tree unless `-AllowDirty` is supplied; that flag still
 builds only `git archive HEAD`, never uncommitted source. Scratch files stay
 under the ignored `target/vesper-release` directory and are removed on completion
 or failure. The output directory contains `vesper-linux-x64`,
-`vesper-windows-x64.exe`, and `SHA256SUMS` in standard `sha256sum` format with bare
+`vesper-windows-x64.exe`, `LICENSE` and `NOTICE` (copied from the archived commit),
+and `SHA256SUMS` covering all four in standard `sha256sum` format with bare
 filenames. Release versions print `vesper <version> (<12-digit commit SHA>)`.
 Ordinary Cargo builds read the 12-digit SHA from the checkout; archived builds require `VESPER_GIT_SHA`.
 
@@ -65,7 +66,7 @@ After review, the **maintainer** runs the following from the output directory
 against this repository:
 
 ```powershell
-gh release create vesper-v0.6.0 vesper-linux-x64 vesper-windows-x64.exe SHA256SUMS --repo Baryon-Interactive/vesper --target <full-commit-sha> --title 'vesper 0.6.0' --notes 'Built from source commit <full-commit-sha>; see SHA256SUMS.'
+gh release create vesper-v0.6.0 vesper-linux-x64 vesper-windows-x64.exe LICENSE NOTICE SHA256SUMS --repo Baryon-Interactive/vesper --target <full-commit-sha> --title 'vesper 0.6.0' --notes 'Built from source commit <full-commit-sha>; see SHA256SUMS.'
 ```
 
 Replace the version and commit with the reviewed build provenance. Do not
