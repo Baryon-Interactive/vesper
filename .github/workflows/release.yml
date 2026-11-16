@@ -1,0 +1,226 @@
+name: release
+
+on:
+  push:
+    tags: ["vesper-v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  linux-cli:
+    runs-on: ubuntu-latest
+    container: rust:1.99.1-alpine@sha256:44819b27be4c97b0e4d7203bd2e02c4820f97700211b6a37fb4c246a2de59383
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set source commit
+        shell: sh
+        run: echo "VESPER_GIT_SHA=${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
+      - name: Build static Linux CLI
+        shell: sh
+        run: |
+          set -eu
+          apk info -e musl-dev binutils >/dev/null
+          cargo build --release --locked -p vesper-cli --bin vesper --target x86_64-unknown-linux-musl
+          strip target/x86_64-unknown-linux-musl/release/vesper
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/vesper dist/vesper-cli-linux-x64
+      - name: Assert CLI version
+        shell: sh
+        run: test "$(dist/vesper-cli-linux-x64 --version)" = "vesper 0.7.0 ($VESPER_GIT_SHA)"
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: release-linux-cli
+          path: dist/vesper-cli-linux-x64
+          if-no-files-found: error
+
+  windows-cli:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Select Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
+      - name: Set source commit
+        shell: pwsh
+        run: |
+          "VESPER_GIT_SHA=$($env:GITHUB_SHA.Substring(0, 12))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build Windows CLI
+        shell: pwsh
+        run: |
+          cargo +$env:RUST_TOOLCHAIN build --release --locked -p vesper-cli --bin vesper
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/vesper.exe dist/vesper-cli-windows-x64.exe
+      - name: Assert CLI version
+        shell: pwsh
+        run: |
+          $actual = (& dist/vesper-cli-windows-x64.exe --version).Trim()
+          if ($actual -ne "vesper 0.7.0 ($env:VESPER_GIT_SHA)") { throw "Unexpected CLI version: $actual" }
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: release-windows-cli
+          path: dist/vesper-cli-windows-x64.exe
+          if-no-files-found: error
+
+  macos-cli-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Select Rust toolchain
+        shell: bash
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Set source commit
+        shell: bash
+        run: echo "VESPER_GIT_SHA=${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
+      - name: Build native macOS arm64 CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +"$RUST_TOOLCHAIN" build --release --locked -p vesper-cli --bin vesper
+          mkdir -p dist
+          cp target/release/vesper dist/vesper-cli-macos-arm64
+      - name: Assert CLI version
+        shell: bash
+        run: test "$(dist/vesper-cli-macos-arm64 --version)" = "vesper 0.7.0 ($VESPER_GIT_SHA)"
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: release-macos-arm64-cli
+          path: dist/vesper-cli-macos-arm64
+          if-no-files-found: error
+
+  macos-cli-x64:
+    # macos-14 is arm64; this explicit target keeps both macOS jobs on the supported runner.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Select Rust toolchain
+        shell: bash
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Set source commit
+        shell: bash
+        run: echo "VESPER_GIT_SHA=${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
+      - name: Build native macOS x64 CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-apple-darwin --toolchain "$RUST_TOOLCHAIN"
+          cargo +"$RUST_TOOLCHAIN" build --release --locked -p vesper-cli --bin vesper --target x86_64-apple-darwin
+          mkdir -p dist
+          cp target/x86_64-apple-darwin/release/vesper dist/vesper-cli-macos-x64
+      - name: Assert CLI version
+        shell: bash
+        run: test "$(dist/vesper-cli-macos-x64 --version)" = "vesper 0.7.0 ($VESPER_GIT_SHA)"
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: release-macos-x64-cli
+          path: dist/vesper-cli-macos-x64
+          if-no-files-found: error
+
+  windows-client:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: launcher/package-lock.json
+      - name: Select Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
+      - name: Build frontend
+        shell: pwsh
+        run: |
+          npm --prefix launcher ci
+          npm --prefix launcher run build
+      - name: Build unsigned NSIS installer
+        shell: pwsh
+        run: |
+          Push-Location launcher
+          npx tauri build --bundles nsis
+          Pop-Location
+          $source = Get-ChildItem launcher/src-tauri/target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $source) { throw 'Tauri did not produce an NSIS installer' }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $source.FullName dist/Vesper-Setup-0.7.0-windows-x64.exe
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: release-windows-client
+          path: dist/Vesper-Setup-0.7.0-windows-x64.exe
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/vesper-v')
+    needs: [linux-cli, windows-cli, macos-cli-arm64, macos-cli-x64, windows-client]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check tag matches workspace version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#vesper-v}"
+          workspace_version=$(python - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path("Cargo.toml").read_text(encoding="utf-8")
+          section = text.split("[workspace.package]", 1)[1].split("[", 1)[0]
+          print(re.search(r'^version\s*=\s*"([^"]+)"', section, re.MULTILINE).group(1))
+          PY
+          )
+          test "$tag_version" = "$workspace_version"
+          test "$workspace_version" = "0.7.0"
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Add notices and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp LICENSE NOTICE dist/
+          (cd dist && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort | xargs sha256sum) > dist/SHA256SUMS
+          test "$(wc -l < dist/SHA256SUMS)" -eq 7
+          grep -Fxq 'Vesper-Setup-0.7.0-windows-x64.exe' dist/SHA256SUMS
+          grep -Fxq 'vesper-cli-linux-x64' dist/SHA256SUMS
+          grep -Fxq 'vesper-cli-windows-x64.exe' dist/SHA256SUMS
+          grep -Fxq 'vesper-cli-macos-arm64' dist/SHA256SUMS
+          grep -Fxq 'vesper-cli-macos-x64' dist/SHA256SUMS
+      - name: Fill release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -e "s/@VERSION@/${GITHUB_REF_NAME#vesper-v}/g" \
+              -e "s/@COMMIT@/${GITHUB_SHA}/g" \
+              scripts/release-notes.md > release-notes.md
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: >-
+          gh release create "$GITHUB_REF_NAME" --target "$GITHUB_SHA"
+          --title "Vesper ${GITHUB_REF_NAME#vesper-v}" --notes-file release-notes.md
+          dist/Vesper-Setup-0.7.0-windows-x64.exe dist/vesper-cli-linux-x64
+          dist/vesper-cli-windows-x64.exe dist/vesper-cli-macos-arm64
+          dist/vesper-cli-macos-x64 dist/LICENSE dist/NOTICE dist/SHA256SUMS

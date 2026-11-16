@@ -63,3 +63,5 @@ sha256sum -c ./target/release-out/SHA256SUMS
 
 The CI workflow is the source of the macOS binaries and the client installer;
 those jobs are not reproduced by the local script.
+Both macOS CLI jobs use the supported `macos-14` runner; the x64 job adds the
+`x86_64-apple-darwin` target explicitly so it does not depend on an Intel runner.

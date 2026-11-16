@@ -1341,7 +1341,9 @@ fn settings_keep_existing_paths_defaults_and_json_fields() {
 
 #[test]
 fn no_gateway_paid_game_state_is_clear_and_free_catalogue_remains_available() {
-    let error = vesper_client::gateway::require_gateway("").unwrap_err().to_string();
+    let error = vesper_client::gateway::require_gateway("")
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("Paid games need a configured key gateway"));
     assert!(error.contains("free installs remain available"));
     assert!(vesper_client::gateway::require_gateway("https://gateway.example").is_ok());

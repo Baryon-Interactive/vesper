@@ -130,10 +130,7 @@ fn metadata_root(base: &str) -> Result<(Signed<RootSigned>, Signed<RoutesSigned>
     Ok((root, routes))
 }
 
-fn root_matches_trusted(
-    root: &Signed<RootSigned>,
-    trusted: &Signed<RootSigned>,
-) -> Result<bool> {
+fn root_matches_trusted(root: &Signed<RootSigned>, trusted: &Signed<RootSigned>) -> Result<bool> {
     Ok(root.signed.keys == trusted.signed.keys
         && serde_json::to_value(&root.signed.roles)?
             == serde_json::to_value(&trusted.signed.roles)?)
@@ -400,6 +397,8 @@ mod tests {
     use std::collections::BTreeMap;
     use vesper_meta::{AppChannel, AppChannelManifest, AppSource};
 
+    static TRUST_ROOT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn official_root_is_accepted() {
         let official: Signed<RootSigned> = serde_json::from_str(BUILTIN_ROOT).unwrap();
@@ -410,16 +409,32 @@ mod tests {
     fn different_root_is_rejected_without_override() {
         let official: Signed<RootSigned> = serde_json::from_str(BUILTIN_ROOT).unwrap();
         let mut different = official.clone();
-        different.signed.keys.insert("different".into(), "key".into());
+        different
+            .signed
+            .keys
+            .insert("different".into(), "key".into());
         assert!(!root_matches_trusted(&different, &official).unwrap());
     }
 
     #[test]
     fn different_root_is_accepted_with_explicit_override() {
+        let _lock = TRUST_ROOT_ENV_LOCK.lock().unwrap();
         let official: Signed<RootSigned> = serde_json::from_str(BUILTIN_ROOT).unwrap();
         let mut development = official.clone();
-        development.signed.keys.insert("different".into(), "key".into());
-        assert!(root_matches_trusted(&development, &development).unwrap());
+        development
+            .signed
+            .keys
+            .insert("different".into(), "key".into());
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(temp.path(), serde_json::to_vec(&development).unwrap()).unwrap();
+        let previous = std::env::var_os(TRUSTED_ROOT_ENV);
+        std::env::set_var(TRUSTED_ROOT_ENV, temp.path());
+        assert!(root_matches_trusted(&development, &trusted_root().unwrap()).unwrap());
+        if let Some(previous) = previous {
+            std::env::set_var(TRUSTED_ROOT_ENV, previous);
+        } else {
+            std::env::remove_var(TRUSTED_ROOT_ENV);
+        }
     }
 
     #[test]
