@@ -45,6 +45,11 @@ test("workflow builds and checks every required asset", () => {
   ]) assert.match(workflow + notes, new RegExp(asset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(workflow, /find \. -maxdepth 1 -type f ! -name SHA256SUMS/);
   assert.match(workflow, /test "\$\(wc -l < dist\/SHA256SUMS\)" -eq 7/);
+  // SHA256SUMS lines are "<64 hex>  <name>"; each asset check must match that whole line, not the bare name.
+  assert.doesNotMatch(workflow, /grep -Fxq/);
+  for (const name of [String.raw`Vesper-Setup-0\.7\.0-windows-x64\.exe`, "vesper-cli-linux-x64", String.raw`vesper-cli-windows-x64\.exe`, "vesper-cli-macos-arm64", "vesper-cli-macos-x64"]) {
+    assert.ok(workflow.includes(`grep -Eq '^[0-9a-f]{64}  ${name}$' dist/SHA256SUMS`), name);
+  }
   assert.match(notes, /Players: download Vesper-Setup-@VERSION@-windows-x64\.exe/);
   assert.match(notes, /Developers: vesper CLI/);
   assert.match(notes, /xattr -d com\.apple\.quarantine <file>/);
