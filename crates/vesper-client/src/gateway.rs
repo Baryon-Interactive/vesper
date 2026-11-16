@@ -5,6 +5,18 @@ use crate::{
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+/// User-facing state when a paid game has no configured key gateway.
+pub const NO_GATEWAY_PAID_MESSAGE: &str =
+    "Paid games need a configured key gateway; browsing and free installs remain available.";
+
+/// Reject paid-game operations when no key gateway is configured.
+pub fn require_gateway(gateway_base: &str) -> Result<()> {
+    if gateway_base.trim().is_empty() {
+        anyhow::bail!(NO_GATEWAY_PAID_MESSAGE);
+    }
+    Ok(())
+}
+
 /// Fetch an authorized depot key for a paid application.
 pub fn depot_key(gateway_base: &str, app_id: &str, key_id: u64, token: &str) -> Result<String> {
     fetch_depot_key_internal(gateway_base, app_id, key_id, token)

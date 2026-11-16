@@ -161,6 +161,7 @@ pub(crate) fn run_install(
         .get(&request.channel)
         .context("requested channel is not published")?;
     let crypto = if channel.encrypted {
+        gateway::require_gateway(&settings.gateway_base)?;
         let token = credentials::load()?;
         let mut key_hex = gateway::depot_key(
             &settings.gateway_base,

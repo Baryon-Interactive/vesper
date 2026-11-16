@@ -9,6 +9,12 @@ subject to each provider's quotas and terms.
 Status: **pre-release**. The Vesper/1 format and interfaces may change. The project is
 licensed under Apache-2.0.
 
+## Download
+
+Players can download the Windows client installer, `Vesper-Setup-0.7.0-windows-x64.exe`,
+from the 0.7.0 Release. Developers can download the `vesper` command-line tool
+for Linux, Windows or macOS. The CLI is a command-line tool, not a desktop app.
+
 ## How it works
 
 ```text

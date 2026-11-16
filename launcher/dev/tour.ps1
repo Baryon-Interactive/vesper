@@ -8,6 +8,7 @@ $stateRoot = Join-Path $out 'tour-state'
 if (Test-Path $stateRoot) { Remove-Item -Recurse -Force $stateRoot }
 $env:VESPER_STATE_DIR = $stateRoot
 if (-not $SkipSetup) { & (Join-Path $PSScriptRoot 'start.ps1') }
+$env:VESPER_TRUSTED_ROOT = Join-Path $out 'root.json'
 $indexServer = Start-Process -FilePath 'python' -ArgumentList @((Join-Path $PSScriptRoot 'server.py'),'--root',$out,'--port',$Port) -PassThru -WindowStyle Hidden
 $gatewayServer = Start-Process -FilePath 'python' -ArgumentList @((Join-Path $PSScriptRoot 'server.py'),'--root',$out,'--port',$GatewayPort) -PassThru -WindowStyle Hidden
 

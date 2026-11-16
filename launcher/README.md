@@ -1,4 +1,4 @@
-# Vesper Windows launcher
+# Vesper Windows client
 
 The launcher is a Windows Tauri v2 desktop client for the Vesper catalogue and
 installed game library. All client logic lives in the window-independent
@@ -8,7 +8,10 @@ plus window setup and the automatic updater. Command names, arguments and event
 payloads define the frontend contract. See the [project overview](../README.md),
 [architecture](../docs/architecture.md) and [testing guide](../docs/testing.md).
 
-## Development
+The Windows installer is the player client distributed in Vesper releases. The
+CLI binaries are separate developer tools; the launcher is not the CLI.
+
+## Build the installer
 
 Use the Rust toolchain in [rust-toolchain.toml](../rust-toolchain.toml), Node.js 22
 or later, WebView2 and the Tauri Windows C++ prerequisites. From an x64 Visual
@@ -22,7 +25,13 @@ cargo clippy --manifest-path launcher/src-tauri/Cargo.toml --all-targets -- -D w
 npm --prefix launcher test
 Push-Location launcher; npx tsc --noEmit; Pop-Location
 powershell -ExecutionPolicy Bypass -File launcher/dev/build-exe.ps1
+npx tauri build --bundles nsis
 ```
+
+The NSIS installer is unsigned in 0.7.0, so Windows SmartScreen may warn before
+installation. CI builds it from the tagged source with the same command.
+
+## Development
 
 `build-exe.ps1` uses `custom-protocol` and copies the debug executable to
 `dev/out/bin/vesper-launcher.exe`, so later cargo test builds do not replace the
@@ -51,7 +60,10 @@ python launcher/dev/server.py --root launcher/dev/out --port 8787
 Set Index API to `http://127.0.0.1:3210` and Key Gateway to
 `http://127.0.0.1:8787`. The demo has free and encrypted paid titles. Its email
 code is `123456` and paid redemption code is `DEMO-PAID-2026`; these are local
-mock values. The server is not the production Worker.
+mock values. The server is not the production Worker. The tour sets the explicit
+`VESPER_TRUSTED_ROOT` override to the generated `launcher/dev/out/root.json`;
+set that variable yourself when using another development catalogue. Release
+builds without the override require the official root shipped in the client.
 
 After installing v1, run:
 

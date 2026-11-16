@@ -127,6 +127,7 @@ foreach ($app in $apps) {
   Copy-Item (Join-Path $pack 'manifest.cbor.zst') (Join-Path $releaseOut 'manifest.cbor.zst') -Force
 }
 Write-Host "Static API output: $out"
+Write-Host "Development trust override: `$env:VESPER_TRUSTED_ROOT = '$out/root.json'"
 Write-Host "Start local services in another terminal:"
 Write-Host "  python $PSScriptRoot/server.py --root $out --port $Port"
 Write-Host "Paid demo redeem code: DEMO-PAID-2026"
