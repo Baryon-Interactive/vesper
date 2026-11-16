@@ -11,6 +11,7 @@ regenerated without changing application targets.
 ```text
 <index>/
   root.json
+  1.root.json, 2.root.json, ...   (versioned roots, see root renewal below)
   routes.json
   apps/<app_id>/description.md
   apps/<app_id>/store.json
@@ -121,10 +122,62 @@ online files were deleted. A shallow checkout cannot enable initialization.
 Restore full history or supply a trusted `--previous` index to recover versions.
 Automated workflows never pass `--initialize`. Developers do not hold online keys.
 
+## Root renewal and rotation
+
+`root.json` is the current root. Every root version after the first is also
+published as `<N>.root.json` next to it (`2.root.json`, `3.root.json`, ...),
+together with the version it replaced, so the chain is complete from `1.root.json`.
+The client starts from the root embedded in its build, or from the newest root it
+has already verified, and fetches `N+1.root.json`, `N+2.root.json` and so on until
+the index answers 404. Each new root must:
+
+- have exactly the next version (a lower or skipped version is a rollback or gap);
+- be signed by a threshold of the previous root's `root` role keys; and
+- be signed by a threshold of its own `root` role keys.
+
+The client caches each verified root under `trust/` in its state directory, keyed
+by the trust anchor, and starts from that cache next time. Intermediate roots may
+have expired; the final one may not. The index's `root.json` must then equal the
+newest verified root, so a `root.json` rolled back below a root the client has
+already seen is rejected, and so is a newer `root.json` whose versioned file is
+missing. When a new root changes the snapshot or timestamp key, the client drops
+its cached app snapshot and timestamp versions so the new online key can start a
+fresh version sequence. A client release that embeds a newer root skips the older
+chain. `VESPER_TRUSTED_ROOT` replaces the embedded anchor for development
+catalogues and chains in the same way.
+
+Renew a root before it expires, and rotate keys, offline:
+
+```bash
+vesper index root-keygen --out new-root.key        # only to add a new holder; prints the public key
+vesper index root-draft --index . --expires-days 365 \
+  [--add-root-key <public hex>] [--remove-root-key <key id or public hex>] \
+  [--threshold <n>] [--online-pubkey <public hex>]
+vesper index root-sign --draft root.draft.json --key-file <root key>   # once per holder
+vesper index root-publish --index .
+vesper index route-sign --index . --root-key-file <new root key>        # after a root key change
+vesper index verify --index .
+```
+
+`root-draft` writes an unsigned `root.draft.json` with the next version; Pages
+does not serve it. Holders of the current root keys and of the new root keys add
+signatures with `root-sign` (a renewal needs only the current threshold, because
+the keys are the same). `root-publish` verifies the draft as the successor of
+`root.json`, writes `<old>.root.json` if it is missing, `<new>.root.json` and the
+new `root.json`, and removes the draft. `routes.json` is signed by the root role, so
+after replacing root keys re-sign it until it meets the new threshold.
+
+`index verify` checks the whole versioned chain and that `root.json` equals its
+newest file. With `--previous`, the new chain must contain the previous
+`root.json` unchanged at its version, so a PR cannot replace or roll back the root.
+Root changes go through a maintainer PR with the `maintainer-approved` label.
+Commit `root.json` and the versioned files together, and never delete old
+`<N>.root.json` files: older clients chain through them.
+
 ## Client catalogue verification
 
 Pages copies raw `apps/<id>/store.json` and `description.md` byte-for-byte along
-with targets, snapshot, timestamp, root and routes. API pages supply discovery IDs.
+with targets, snapshot, timestamp, root, versioned roots and routes. API pages supply discovery IDs.
 The client verifies the root/routes/developer/online chain, then fetches the raw
 store files and checks `metadata` length and SHA-256 before parsing and returning
 any store content. It ignores the API's derived store and description records.
