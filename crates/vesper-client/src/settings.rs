@@ -28,8 +28,8 @@ impl Default for Settings {
         let root = state_dir();
         Self {
             library_dir: root.join("library").to_string_lossy().into_owned(),
-            api_base: "http://127.0.0.1:3210".into(),
-            gateway_base: "http://127.0.0.1:8787".into(),
+            api_base: "https://baryon-interactive.github.io/vesper-index".into(),
+            gateway_base: String::new(),
             concurrency: 8,
             bandwidth_limit_kib: 0,
             enabled_sources: vec!["github".into(), "http".into(), "hf".into(), "r2".into()],

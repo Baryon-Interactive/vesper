@@ -12,6 +12,7 @@ use vesper_meta::{
 };
 
 const BUILTIN_ROOT: &str = include_str!("../config/root.json");
+const TRUSTED_ROOT_ENV: &str = "VESPER_TRUSTED_ROOT";
 
 /// Verify and cache the signed metadata chain for an application.
 pub fn verify_app(base: &str, app_id: &str) -> Result<(Signed<AppTargetsSigned>, AppRoute)> {
@@ -94,8 +95,8 @@ fn verify_online_role<T: Serialize>(
     root: &Signed<RootSigned>,
     role: &str,
 ) -> Result<()> {
-    let builtin: Signed<RootSigned> = serde_json::from_str(BUILTIN_ROOT)?;
-    verify_online_role_with_bootstrap(document, root, role, builtin.signed.keys.is_empty())
+    let trusted = trusted_root()?;
+    verify_online_role_with_bootstrap(document, root, role, trusted.signed.keys.is_empty())
 }
 
 fn verify_online_role_with_bootstrap<T: Serialize>(
@@ -106,7 +107,7 @@ fn verify_online_role_with_bootstrap<T: Serialize>(
 ) -> Result<()> {
     if let Some(spec) = root.signed.roles.get(role) {
         verify_role(document, &root.signed.keys, spec)
-    } else if bootstrap {
+    } else if bootstrap && cfg!(debug_assertions) {
         static WARNED: std::sync::Once = std::sync::Once::new();
         WARNED.call_once(|| eprintln!("warning: demo bootstrap index lacks online signing roles; configure snapshot and timestamp roles before production"));
         Ok(())
@@ -118,14 +119,8 @@ fn verify_online_role_with_bootstrap<T: Serialize>(
 fn metadata_root(base: &str) -> Result<(Signed<RootSigned>, Signed<RoutesSigned>)> {
     let root: Signed<RootSigned> = get_json(&join_url(base, "root.json"))?;
     let routes: Signed<RoutesSigned> = get_json(&join_url(base, "routes.json"))?;
-    // A production build can replace config/root.json with the offline root. The
-    // empty bootstrap root is deliberately accepted for local demo indexes.
-    let builtin: Signed<RootSigned> = serde_json::from_str(BUILTIN_ROOT)?;
-    if !builtin.signed.keys.is_empty()
-        && (builtin.signed.keys != root.signed.keys
-            || serde_json::to_value(&builtin.signed.roles)?
-                != serde_json::to_value(&root.signed.roles)?)
-    {
+    let trusted = trusted_root()?;
+    if !root_matches_trusted(&root, &trusted)? {
         anyhow::bail!("index root does not match the launcher's trusted root")
     }
     if let Some(role) = root.signed.roles.get("root") {
@@ -133,6 +128,28 @@ fn metadata_root(base: &str) -> Result<(Signed<RootSigned>, Signed<RoutesSigned>
     }
     verify_routes(&routes, &root)?;
     Ok((root, routes))
+}
+
+fn root_matches_trusted(
+    root: &Signed<RootSigned>,
+    trusted: &Signed<RootSigned>,
+) -> Result<bool> {
+    Ok(root.signed.keys == trusted.signed.keys
+        && serde_json::to_value(&root.signed.roles)?
+            == serde_json::to_value(&trusted.signed.roles)?)
+}
+
+fn trusted_root() -> Result<Signed<RootSigned>> {
+    match std::env::var_os(TRUSTED_ROOT_ENV) {
+        Some(path) if !path.is_empty() => {
+            let path = std::path::PathBuf::from(path);
+            let bytes = fs::read(&path)
+                .with_context(|| format!("read trusted root override {}", path.display()))?;
+            Ok(serde_json::from_slice(&bytes)
+                .with_context(|| format!("parse trusted root override {}", path.display()))?)
+        }
+        _ => Ok(serde_json::from_str(BUILTIN_ROOT)?),
+    }
 }
 
 fn cached_version(app_id: &str) -> Option<u64> {
@@ -382,6 +399,28 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use vesper_meta::{AppChannel, AppChannelManifest, AppSource};
+
+    #[test]
+    fn official_root_is_accepted() {
+        let official: Signed<RootSigned> = serde_json::from_str(BUILTIN_ROOT).unwrap();
+        assert!(root_matches_trusted(&official, &official).unwrap());
+    }
+
+    #[test]
+    fn different_root_is_rejected_without_override() {
+        let official: Signed<RootSigned> = serde_json::from_str(BUILTIN_ROOT).unwrap();
+        let mut different = official.clone();
+        different.signed.keys.insert("different".into(), "key".into());
+        assert!(!root_matches_trusted(&different, &official).unwrap());
+    }
+
+    #[test]
+    fn different_root_is_accepted_with_explicit_override() {
+        let official: Signed<RootSigned> = serde_json::from_str(BUILTIN_ROOT).unwrap();
+        let mut development = official.clone();
+        development.signed.keys.insert("different".into(), "key".into());
+        assert!(root_matches_trusted(&development, &development).unwrap());
+    }
 
     #[test]
     fn manifest_404_or_tampering_falls_back_to_next_enabled_source() {

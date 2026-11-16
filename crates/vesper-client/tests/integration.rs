@@ -18,16 +18,19 @@ static STATE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 struct StateEnv {
     _lock: std::sync::MutexGuard<'static, ()>,
     previous: Option<std::ffi::OsString>,
+    previous_trusted_root: Option<std::ffi::OsString>,
 }
 
 impl StateEnv {
     fn new(path: &Path) -> Self {
         let lock = STATE_ENV.lock().unwrap();
         let previous = std::env::var_os("VESPER_STATE_DIR");
+        let previous_trusted_root = std::env::var_os("VESPER_TRUSTED_ROOT");
         std::env::set_var("VESPER_STATE_DIR", path);
         Self {
             _lock: lock,
             previous,
+            previous_trusted_root,
         }
     }
 }
@@ -38,6 +41,11 @@ impl Drop for StateEnv {
             std::env::set_var("VESPER_STATE_DIR", previous);
         } else {
             std::env::remove_var("VESPER_STATE_DIR");
+        }
+        if let Some(previous) = &self.previous_trusted_root {
+            std::env::set_var("VESPER_TRUSTED_ROOT", previous);
+        } else {
+            std::env::remove_var("VESPER_TRUSTED_ROOT");
         }
     }
 }
@@ -248,6 +256,13 @@ impl IndexServer {
         .unwrap();
         let timestamp = build_timestamp(&snapshot, version, expires_in(1), online).unwrap();
         self.json("/root.json", &root);
+        let trusted_root = std::env::var_os("VESPER_STATE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("vesper-test-state"))
+            .join("trusted-root.json");
+        fs::create_dir_all(trusted_root.parent().unwrap()).unwrap();
+        fs::write(&trusted_root, serde_json::to_vec(&root).unwrap()).unwrap();
+        std::env::set_var("VESPER_TRUSTED_ROOT", &trusted_root);
         self.json("/routes.json", &routes);
         self.json(&format!("/apps/{app}/store.json"), &json!({}));
         self.json(&format!("/apps/{app}/description.md"), &json!({}));
@@ -1281,6 +1296,11 @@ fn settings_keep_existing_paths_defaults_and_json_fields() {
         defaults.library_dir,
         temp.path().join("library").to_string_lossy()
     );
+    assert_eq!(
+        defaults.api_base,
+        "https://baryon-interactive.github.io/vesper-index"
+    );
+    assert!(defaults.gateway_base.is_empty());
     fs::write(temp.path().join("settings.json"), br#"{"concurrency":3}"#).unwrap();
     let mut settings = vesper_client::load_settings();
     assert_eq!(settings.concurrency, 3);
@@ -1317,6 +1337,14 @@ fn settings_keep_existing_paths_defaults_and_json_fields() {
         vesper_client::load_settings().library_dir,
         settings.library_dir
     );
+}
+
+#[test]
+fn no_gateway_paid_game_state_is_clear_and_free_catalogue_remains_available() {
+    let error = vesper_client::gateway::require_gateway("").unwrap_err().to_string();
+    assert!(error.contains("Paid games need a configured key gateway"));
+    assert!(error.contains("free installs remain available"));
+    assert!(vesper_client::gateway::require_gateway("https://gateway.example").is_ok());
 }
 
 #[test]

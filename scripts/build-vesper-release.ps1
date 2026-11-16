@@ -67,7 +67,7 @@ try {
     Write-Host "Building $Version from $commit with $linuxImage"
     # These build packages are already installed in the pinned image; do not update them.
     # Keep linker intermediates off the Windows bind mount; export only the final binary.
-    $linuxBuild = 'set -eu; apk info -e musl-dev binutils > /dev/null; cargo build --release --locked -p vesper-cli --bin vesper --target x86_64-unknown-linux-musl; strip /tmp/vesper-target/x86_64-unknown-linux-musl/release/vesper; cp /tmp/vesper-target/x86_64-unknown-linux-musl/release/vesper /src/vesper-linux-x64'
+    $linuxBuild = 'set -eu; apk info -e musl-dev binutils > /dev/null; cargo build --release --locked -p vesper-cli --bin vesper --target x86_64-unknown-linux-musl; strip /tmp/vesper-target/x86_64-unknown-linux-musl/release/vesper; cp /tmp/vesper-target/x86_64-unknown-linux-musl/release/vesper /src/vesper-cli-linux-x64'
     Invoke-Checked 'docker' @('run', '--rm', '--platform', 'linux/amd64',
         '--mount', "type=bind,source=$source,target=/src", '--workdir', '/src',
         '-e', "VESPER_GIT_SHA=$env:VESPER_GIT_SHA", '-e', "SOURCE_DATE_EPOCH=$epoch",
@@ -80,18 +80,18 @@ try {
     [System.IO.File]::WriteAllText($windowsBuild, $cmdText, [System.Text.Encoding]::ASCII)
     Invoke-Checked 'cmd.exe' @('/d', '/c', $windowsBuild)
 
-    $linuxBinary = Join-Path $source 'vesper-linux-x64'
+    $linuxBinary = Join-Path $source 'vesper-cli-linux-x64'
     $windowsBinary = Join-Path $env:CARGO_TARGET_DIR 'x86_64-pc-windows-msvc/release/vesper.exe'
     $expected = "vesper $Version ($env:VESPER_GIT_SHA)"
     $actual = (& $windowsBinary --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw "Unexpected Windows version: $actual" }
-    $actual = (& docker run --rm --platform linux/amd64 --mount "type=bind,source=$source,target=/src,readonly" $linuxImage /src/vesper-linux-x64 --version | Out-String).Trim()
+    $actual = (& docker run --rm --platform linux/amd64 --mount "type=bind,source=$source,target=/src,readonly" $linuxImage /src/vesper-cli-linux-x64 --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw "Unexpected Linux version: $actual" }
-    Copy-Item -LiteralPath $linuxBinary -Destination (Join-Path $output 'vesper-linux-x64')
-    Copy-Item -LiteralPath $windowsBinary -Destination (Join-Path $output 'vesper-windows-x64.exe')
+    Copy-Item -LiteralPath $linuxBinary -Destination (Join-Path $output 'vesper-cli-linux-x64')
+    Copy-Item -LiteralPath $windowsBinary -Destination (Join-Path $output 'vesper-cli-windows-x64.exe')
     # License texts come from the archived commit, so they match the source of the binaries.
     foreach ($name in @('LICENSE', 'NOTICE')) { Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $output $name) }
-    $sums = foreach ($name in @('vesper-linux-x64', 'vesper-windows-x64.exe', 'LICENSE', 'NOTICE')) {
+    $sums = foreach ($name in @('vesper-cli-linux-x64', 'vesper-cli-windows-x64.exe', 'LICENSE', 'NOTICE')) {
         $hash = (Get-FileHash -LiteralPath (Join-Path $output $name) -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $name"
     }
