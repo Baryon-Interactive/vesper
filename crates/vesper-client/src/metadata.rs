@@ -131,9 +131,7 @@ fn metadata_root(base: &str) -> Result<(Signed<RootSigned>, Signed<RoutesSigned>
 }
 
 fn root_matches_trusted(root: &Signed<RootSigned>, trusted: &Signed<RootSigned>) -> Result<bool> {
-    Ok(root.signed.keys == trusted.signed.keys
-        && serde_json::to_value(&root.signed.roles)?
-            == serde_json::to_value(&trusted.signed.roles)?)
+    Ok(serde_json::to_value(root)? == serde_json::to_value(trusted)?)
 }
 
 fn trusted_root() -> Result<Signed<RootSigned>> {
