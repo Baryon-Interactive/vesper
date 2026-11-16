@@ -93,8 +93,7 @@ pub(crate) fn store_session_token(token: &str) -> Result<()> {
     #[cfg(not(windows))]
     {
         fs::create_dir_all(state_dir())?;
-        fs::write(state_dir().join("session.token"), token)?;
-        Ok(())
+        write_private(&state_dir().join("session.token"), token.as_bytes())
     }
 }
 
@@ -116,5 +115,50 @@ pub(crate) fn delete_session_token() -> Result<()> {
     {
         let _ = fs::remove_file(state_dir().join("session.token"));
         Ok(())
+    }
+}
+
+/// Write a file only its owner can read or write (0600 on Unix). Without a system
+/// credential store wired in on these platforms, this keeps the session token
+/// away from other local users.
+#[cfg(not(windows))]
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).context("store Vesper session")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // An older token file may have been created with wider permissions.
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_file_is_private_even_if_it_existed_with_wider_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.token");
+        fs::write(&path, b"old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&path, b"new-token").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new-token");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }

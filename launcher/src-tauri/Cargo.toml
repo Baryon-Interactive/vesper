@@ -1,7 +1,7 @@
 [package]
 publish = false
 name = "vesper-launcher"
-version = "0.7.0"
+version = "0.7.1"
 description = "Vesper Windows game launcher"
 authors = ["Baryon Interactive"]
 license = "Apache-2.0"

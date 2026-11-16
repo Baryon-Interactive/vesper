@@ -1,6 +1,6 @@
-# Vesper Windows client
+# Vesper client
 
-The launcher is a Windows Tauri v2 desktop client for the Vesper catalogue and
+The launcher is the Tauri v2 desktop client for Windows, macOS and Linux for the Vesper catalogue and
 installed game library. All client logic lives in the window-independent
 [`vesper-client`](../crates/vesper-client/) crate; this launcher is its Tauri UI.
 The Rust interface contains command wrappers and the `TauriEventSink` adapter,
@@ -8,8 +8,9 @@ plus window setup and the automatic updater. Command names, arguments and event
 payloads define the frontend contract. See the [project overview](../README.md),
 [architecture](../docs/architecture.md) and [testing guide](../docs/testing.md).
 
-The Windows installer is the player client distributed in Vesper releases. The
-CLI binaries are separate developer tools; the launcher is not the CLI.
+The Windows installer, the macOS disk image and the Linux AppImage and `.deb`
+are the player client distributed in Vesper releases. The CLI binaries are
+separate developer tools; the launcher is not the CLI.
 
 ## Build the installer
 
@@ -28,8 +29,24 @@ powershell -ExecutionPolicy Bypass -File launcher/dev/build-exe.ps1
 npx tauri build --bundles nsis
 ```
 
-The NSIS installer is unsigned in 0.7.0, so Windows SmartScreen may warn before
+The NSIS installer is unsigned, so Windows SmartScreen may warn before
 installation. CI builds it from the tagged source with the same command.
+
+macOS and Linux bundles are built by CI (see
+[the release workflow](../.github/workflows/release.yml)). On a Mac with both
+Rust targets `aarch64-apple-darwin` and `x86_64-apple-darwin` installed:
+
+```bash
+npm --prefix launcher ci
+cd launcher && npx tauri build --target universal-apple-darwin --bundles dmg
+```
+
+The app is ad-hoc signed and not notarized, so Gatekeeper blocks the first
+launch of a downloaded copy: right-click Vesper and choose Open, or run
+`xattr -dr com.apple.quarantine /Applications/Vesper.app`. On Ubuntu 22.04 or
+later, install `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`,
+`librsvg2-dev`, `libxdo-dev`, `libssl-dev`, `patchelf` and `build-essential`,
+then run `npx tauri build --bundles appimage,deb` in `launcher`.
 
 ## Development
 
@@ -92,8 +109,14 @@ and support launch, updates, channels, rollback, verify/repair and uninstall.
 User files are protected unless deletion is explicitly requested. File-lock
 errors report Windows Restart Manager owners without forcibly terminating them.
 
+The client installs the channel build for the player's own platform
+(`<channel>-<platform>` first, then the plain channel if its platform matches; see
+[publishing](../docs/publishing.md)). On macOS and Linux it restores execute
+bits for packed executables and the launch target.
+
 Paid installation IPC carries app/channel/metadata/install path only. The client
-library reads the session from `Vesper.Launcher.Session`, obtains the DepotKey,
+library reads the session from `Vesper.Launcher.Session` (Windows Credential
+Manager; a `0600` file in the state directory on macOS and Linux), obtains the DepotKey,
 zeroizes temporary hex and never emits it. Logout deletes the session credential.
 Tasks persist under the user's local Vesper state directory; `VESPER_STATE_DIR`
 selects an isolated test/demo directory. Pause takes effect between requests;

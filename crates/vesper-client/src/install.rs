@@ -155,6 +155,14 @@ pub(crate) fn run_install(
     });
     let settings = state.settings.lock().unwrap().clone();
     let (targets, _) = metadata::verify_update(&request.metadata_base, &request.app_id)?;
+    // Install the build published for this computer; the resolved name is what the
+    // library remembers, so later updates follow the same platform channel.
+    let mut request = request;
+    request.channel = crate::platform::host::resolve_channel(
+        &targets.signed.channels,
+        &request.channel,
+        crate::platform::host::host_platforms(),
+    )?;
     let channel = targets
         .signed
         .channels
@@ -188,7 +196,7 @@ pub(crate) fn run_install(
         Manifest::decode(&bytes)?
     };
     manifest.validate()?;
-    if manifest.app_id != request.app_id || manifest.platform != "windows-x64" {
+    if manifest.app_id != request.app_id || manifest.platform != channel.platform {
         anyhow::bail!("manifest identity does not match the requested application")
     }
     validate_runtime_rules(&manifest)?;

@@ -251,6 +251,12 @@ impl Installer {
                 let _ = fs::remove_dir_all(&staging_root);
                 anyhow::bail!("materialized file hash mismatch for {}", file.path);
             }
+            let launch_target = manifest
+                .install
+                .launch
+                .as_ref()
+                .is_some_and(|launch| launch.executable == file.path);
+            apply_file_mode(&staged, file.mode, launch_target)?;
             entries.push(JournalEntry {
                 target: file.path.clone(),
                 staged: Some(path_from_root(&staged, &self.root)),
@@ -564,6 +570,28 @@ impl Installer {
     }
 }
 
+/// On Unix, make a file runnable when its packed mode has an execute bit or it is the
+/// manifest's launch target (builds packed on Windows record 0o644 for every file).
+/// Windows has no execute bit, so this does nothing there.
+fn apply_file_mode(path: &Path, mode: u32, launch_target: bool) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let bits = if mode & 0o111 != 0 || launch_target {
+            0o755
+        } else {
+            0o644
+        };
+        fs::set_permissions(path, fs::Permissions::from_mode(bits))
+            .with_context(|| format!("set permissions on {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode, launch_target);
+    }
+    Ok(())
+}
+
 fn replace_file(from: PathBuf, to: PathBuf) -> Result<()> {
     if to.exists() {
         fs::remove_file(&to)?;
@@ -854,6 +882,31 @@ fn unix_seconds() -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_install_marks_executables_and_launch_target_runnable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mode_of = |name: &str| {
+            fs::metadata(dir.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        for name in ["packed-exec", "plain", "launcher"] {
+            fs::write(dir.path().join(name), b"x").unwrap();
+            fs::set_permissions(dir.path().join(name), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        apply_file_mode(&dir.path().join("packed-exec"), 0o755, false).unwrap();
+        apply_file_mode(&dir.path().join("plain"), 0o644, false).unwrap();
+        apply_file_mode(&dir.path().join("launcher"), 0o644, true).unwrap();
+        assert_eq!(mode_of("packed-exec"), 0o755);
+        assert_eq!(mode_of("plain"), 0o644);
+        assert_eq!(mode_of("launcher"), 0o755);
+    }
+
     use super::*;
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener, TcpStream};
