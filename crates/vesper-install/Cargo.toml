@@ -2,6 +2,7 @@
 publish = false
 name = "vesper-install"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 

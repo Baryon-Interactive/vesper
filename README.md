@@ -6,8 +6,8 @@ index repository on GitHub provides the catalogue. Clients verify metadata and
 download only the pack sections needed for an install or update. Hosting remains
 subject to each provider's quotas and terms.
 
-Status: **pre-release**. The Vesper/1 format and interfaces may change. The project
-has no open-source license assigned.
+Status: **pre-release**. The Vesper/1 format and interfaces may change. The project is
+licensed under Apache-2.0.
 
 ## How it works
 
@@ -133,4 +133,6 @@ tour, live read-only checks, experiment tests and measured results.
 
 ## License
 
-Not yet licensed. All rights reserved.
+Vesper is licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE).
+The Vesper name and logo are not covered by the license. Third-party dependencies
+keep their own licenses; see [third-party licenses](docs/third-party-licenses.md).

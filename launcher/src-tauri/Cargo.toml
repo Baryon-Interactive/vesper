@@ -4,6 +4,7 @@ name = "vesper-launcher"
 version = "0.6.0"
 description = "Vesper Windows game launcher"
 authors = ["Baryon Interactive"]
+license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.99"
 

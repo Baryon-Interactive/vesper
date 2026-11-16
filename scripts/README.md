@@ -13,6 +13,7 @@ require Windows x64 C++ Build Tools and Rust; Python scripts require Python 3.
 | [e2e-http.py](e2e-http.py) | GitHub REST/Range mock used by e2e, not a production server |
 | [github-smoke.ps1](github-smoke.ps1) | Read-only public release install/update/rollback smoke check; required `-Owner`, `-Repo`, `-Manifest`, `-Release` |
 | [check-docs.py](check-docs.py) | `python scripts/check-docs.py` scans tracked UTF-8 text, local Markdown file links and the root README length |
+| [third-party-licenses.py](third-party-licenses.py) | `python scripts/third-party-licenses.py` writes [docs/third-party-licenses.md](../docs/third-party-licenses.md) from production Rust and launcher npm dependencies; `--check` fails when it is stale or a license is unreviewed |
 | [mem-check.ps1](mem-check.ps1) | Synthetic 64/512 MiB installs and process peak-working-set comparison |
 
 Before `e2e.ps1`, set `VESPER_ONLINE_KEY` to a separate 32-byte Ed25519 seed in
