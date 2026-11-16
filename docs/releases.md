@@ -3,10 +3,13 @@
 See the [project overview](../README.md), [script inventory](../scripts/README.md)
 and [index template](../index-template/README.md).
 
-The public `EthanInMel/gsp-releases`
-repository contains only a README and binary releases. A maintainer creates
-that repository and publishes releases manually; the build script never writes
-to GitHub.
+Binary releases are published on this repository, `Baryon-Interactive/vesper`,
+as `vesper-v<version>` Releases whose tag points to the source commit they were
+built from. A maintainer publishes them manually; the build script never writes
+to GitHub. Releases 0.4.0 to 0.6.0 were first published in `EthanInMel/gsp-releases`;
+the copies here are byte-identical, and index repositories still pinned to the old
+repository keep working until they are re-pinned. Release 0.3.0 predates this
+repository's history and remains only in `EthanInMel/gsp-releases`.
 
 ## Build from a committed tree
 
@@ -59,17 +62,17 @@ docker run --rm --mount type=bind,source=${PWD}/target/release-out,target=/out,r
 ```
 
 After review, the **maintainer** runs the following from the output directory
-against the already-created public binary repository:
+against this repository:
 
 ```powershell
-gh release create vesper-v0.6.0 vesper-linux-x64 vesper-windows-x64.exe SHA256SUMS --repo EthanInMel/gsp-releases --title 'vesper 0.6.0' --notes 'Built from source commit <full-commit-sha>; see SHA256SUMS.'
+gh release create vesper-v0.6.0 vesper-linux-x64 vesper-windows-x64.exe SHA256SUMS --repo Baryon-Interactive/vesper --target <full-commit-sha> --title 'vesper 0.6.0' --notes 'Built from source commit <full-commit-sha>; see SHA256SUMS.'
 ```
 
 Replace the version and commit with the reviewed build provenance. Do not
 upload source archives or source tokens. Then set workflow-level `VESPER_VERSION`
 and `VESPER_SHA256` in `verify-pr.yml`, `aggregate.yml`, `snapshot.yml`, and `timestamp.yml` to the
 same release version and **Linux binary** hash. Keep
-`VESPER_RELEASES_REPO: EthanInMel/gsp-releases`. Run the template tests, then test
+`VESPER_RELEASES_REPO: Baryon-Interactive/vesper`. Run the template tests, then test
 snapshot and timestamp Actions in the index repository and verify a PR changing
 `.github/workflows/` remains for manual merge. The placeholder pins are the only
 intentional pre-publication placeholders and must be replaced before use.
