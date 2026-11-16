@@ -195,14 +195,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd launcher && npx tauri build --target universal-apple-darwin --bundles dmg)
+          # Request "app" too: with dmg alone Tauri deletes Vesper.app after packing it.
+          (cd launcher && npx tauri build --target universal-apple-darwin --bundles app,dmg)
           bundle=launcher/src-tauri/target/universal-apple-darwin/release/bundle
           app="$bundle/macos/Vesper.app"
           exe=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
           archs=$(lipo -archs "$app/Contents/MacOS/$exe")
           echo "app architectures: $archs"
           [[ " $archs " == *" arm64 "* && " $archs " == *" x86_64 "* ]]
-          dmg=$(ls "$bundle"/dmg/*.dmg | head -n 1)
+          dmgs=("$bundle"/dmg/*.dmg)
+          dmg="${dmgs[0]}"
+          test -f "$dmg"
           mkdir -p dist
           cp "$dmg" "dist/Vesper-$VESPER_VERSION-macos-universal.dmg"
       - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
@@ -246,10 +249,18 @@ jobs:
           set -euo pipefail
           (cd launcher && npx tauri build --bundles appimage,deb)
           bundle=launcher/src-tauri/target/release/bundle
-          appimage=$(ls "$bundle"/appimage/*.AppImage | head -n 1)
-          deb=$(ls "$bundle"/deb/*.deb | head -n 1)
-          file "$appimage" | grep -q 'ELF 64-bit'
-          dpkg-deb --contents "$deb" | grep -Eq '\./usr/bin/[^/]+$'
+          appimages=("$bundle"/appimage/*.AppImage)
+          debs=("$bundle"/deb/*.deb)
+          appimage="${appimages[0]}"
+          deb="${debs[0]}"
+          test -f "$appimage" && test -f "$deb"
+          # Capture output before matching: under pipefail, piping into a grep that quits early kills the writer (SIGPIPE).
+          kind=$(file -b "$appimage")
+          echo "AppImage: $kind"
+          [[ "$kind" == *"ELF 64-bit"* ]]
+          contents=$(dpkg-deb --contents "$deb")
+          # grep without -q reads all input, prints the launcher path, and fails if none is found.
+          awk '{print $NF}' <<< "$contents" | grep -E '^\./usr/bin/[^/]+$'
           mkdir -p dist
           cp "$appimage" "dist/Vesper-$VESPER_VERSION-linux-x64.AppImage"
           cp "$deb" "dist/Vesper-$VESPER_VERSION-linux-x64.deb"

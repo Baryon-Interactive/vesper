@@ -38,7 +38,7 @@ Rust targets `aarch64-apple-darwin` and `x86_64-apple-darwin` installed:
 
 ```bash
 npm --prefix launcher ci
-cd launcher && npx tauri build --target universal-apple-darwin --bundles dmg
+cd launcher && npx tauri build --target universal-apple-darwin --bundles app,dmg
 ```
 
 The app is ad-hoc signed and not notarized, so Gatekeeper blocks the first

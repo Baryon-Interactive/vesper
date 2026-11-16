@@ -97,7 +97,7 @@ test("macOS and Linux client jobs build and check native bundles", () => {
   const mac = section("macos-client", "linux-client");
   const linux = section("linux-client", "publish");
   assert.match(mac, /runs-on: macos-latest/);
-  assert.match(mac, /--target universal-apple-darwin --bundles dmg/);
+  assert.match(mac, /--target universal-apple-darwin --bundles app,dmg/);
   assert.match(mac, /lipo -archs/);
   assert.match(mac, /arm64/);
   assert.match(mac, /x86_64/);
@@ -106,6 +106,8 @@ test("macOS and Linux client jobs build and check native bundles", () => {
   assert.match(linux, /--bundles appimage,deb/);
   assert.match(linux, /dpkg-deb --contents/);
   for (const body of [mac, linux]) assert.match(body, /-p vesper-client -p vesper-format -p vesper-install/);
+  // Every step runs with pipefail: a "cmd | grep -q" pipe fails when grep exits early and cmd gets SIGPIPE.
+  assert.doesNotMatch(workflow, /\|\s*grep\s+(-\w*q|-\w+\s+-q)/);
 });
 
 test("publish is the only write-permission job and never runs for pull requests", () => {
