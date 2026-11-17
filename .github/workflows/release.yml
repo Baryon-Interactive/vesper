@@ -259,8 +259,10 @@ jobs:
           echo "AppImage: $kind"
           [[ "$kind" == *"ELF 64-bit"* ]]
           contents=$(dpkg-deb --contents "$deb")
-          # grep without -q reads all input, prints the launcher path, and fails if none is found.
-          awk '{print $NF}' <<< "$contents" | grep -E '^\./usr/bin/[^/]+$'
+          # Tauri's deb writer may store paths with or without a leading "./". grep without -q reads all
+          # input, prints the launcher path, and fails if none is found; then show the listing to diagnose.
+          awk '{print $NF}' <<< "$contents" | grep -E '^(\./)?usr/bin/[^/]+$' \
+            || { echo "no executable under usr/bin; package listing:"; head -n 40 <<< "$contents"; exit 1; }
           mkdir -p dist
           cp "$appimage" "dist/Vesper-$VESPER_VERSION-linux-x64.AppImage"
           cp "$deb" "dist/Vesper-$VESPER_VERSION-linux-x64.deb"
