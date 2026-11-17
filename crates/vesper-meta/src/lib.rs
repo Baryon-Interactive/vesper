@@ -388,6 +388,73 @@ pub fn verify_role<T: Serialize>(
     verify(document, &allowed, role.threshold)
 }
 
+/// File name of a versioned root published next to `root.json`, e.g. `2.root.json`.
+pub fn versioned_root_name(version: u64) -> String {
+    format!("{version}.root.json")
+}
+
+fn root_role(root: &RootSigned) -> Result<&RoleSpec> {
+    anyhow::ensure!(root.typ == "root", "incorrect root role type");
+    let role = root.roles.get("root").context("root role missing")?;
+    anyhow::ensure!(
+        role.threshold >= 1 && role.keyids.len() >= role.threshold as usize,
+        "root role threshold must be between 1 and the number of root keys"
+    );
+    Ok(role)
+}
+
+/// Verify that a root document is signed by a threshold of its own root keys.
+pub fn verify_root_self(root: &Signed<RootSigned>) -> Result<()> {
+    verify_role(root, &root.signed.keys, root_role(&root.signed)?)
+        .context("root is not signed by a threshold of its own root keys")
+}
+
+/// Verify `next` as the direct successor of an already trusted root (TUF root
+/// chaining): its version must be exactly one higher, and it must be signed by
+/// a threshold of the previous root's keys and by a threshold of its own.
+/// Expiry is not checked here; intermediate roots in a chain may have expired.
+pub fn verify_root_successor(
+    trusted: &Signed<RootSigned>,
+    next: &Signed<RootSigned>,
+) -> Result<()> {
+    let expected = trusted
+        .signed
+        .version
+        .checked_add(1)
+        .context("root version overflow")?;
+    if next.signed.version != expected {
+        anyhow::bail!(
+            "root version rollback or gap: expected version {expected}, got {}",
+            next.signed.version
+        );
+    }
+    verify_role(next, &trusted.signed.keys, root_role(&trusted.signed)?).with_context(|| {
+        format!(
+            "root version {expected} is not signed by a threshold of the version {} root keys",
+            trusted.signed.version
+        )
+    })?;
+    verify_root_self(next).with_context(|| format!("root version {expected}"))
+}
+
+/// Whether the snapshot or timestamp signing keys differ between two roots.
+pub fn online_roles_changed(previous: &RootSigned, next: &RootSigned) -> bool {
+    ["snapshot", "timestamp"].iter().any(|name| {
+        let keys = |root: &RootSigned| {
+            root.roles.get(*name).map(|role| {
+                let mut ids = role
+                    .keyids
+                    .iter()
+                    .map(|id| (id.clone(), root.keys.get(id).cloned()))
+                    .collect::<Vec<_>>();
+                ids.sort();
+                (ids, role.threshold)
+            })
+        };
+        keys(previous) != keys(next)
+    })
+}
+
 pub fn target_for_bytes(
     bytes: &[u8],
     custom: BTreeMap<String, serde_json::Value>,

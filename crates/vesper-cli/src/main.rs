@@ -20,6 +20,8 @@ use vesper_meta::{
 use vesper_publish::r2::{R2Config, R2Publisher};
 use vesper_publish::{token_from_env_or_gh, GitHubPublisher};
 
+mod root;
+
 #[derive(clap::Args, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct R2Options {
@@ -408,6 +410,28 @@ enum IndexCommand {
         #[arg(long)]
         root_key_file: PathBuf,
     },
+    /// Generate an offline root key file and print its public key.
+    RootKeygen {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Draft the next root version (renewal or key rotation) for offline signing.
+    RootDraft(root::DraftArgs),
+    /// Add one offline root key's signature to a root draft.
+    RootSign {
+        #[arg(long)]
+        draft: PathBuf,
+        #[arg(long)]
+        key_file: PathBuf,
+    },
+    /// Verify a signed root draft and publish it as <N>.root.json and root.json.
+    RootPublish {
+        #[arg(long)]
+        index: PathBuf,
+        /// Defaults to <index>/root.draft.json.
+        #[arg(long)]
+        draft: Option<PathBuf>,
+    },
     Init {
         #[arg(long)]
         index: PathBuf,
@@ -424,7 +448,13 @@ enum IndexCommand {
 }
 
 fn main() -> Result<()> {
-    run_command(Cli::parse().command)
+    // The derived argument parser for this many subcommands needs more than the
+    // 1 MiB Windows main-thread stack in unoptimised builds.
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| run_command(Cli::parse().command))?
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 fn run_command(command: Command) -> Result<()> {
@@ -1667,6 +1697,13 @@ fn run_index_command(command: IndexCommand) -> Result<()> {
             &out_keys,
             online_pubkey.as_deref(),
         ),
+        IndexCommand::RootKeygen { out } => root::keygen(&out),
+        IndexCommand::RootDraft(args) => root::draft(&args),
+        IndexCommand::RootSign { draft, key_file } => root::sign(&draft, &key_file),
+        IndexCommand::RootPublish { index, draft } => {
+            let draft = draft.unwrap_or_else(|| root::default_draft(&index));
+            root::publish(&index, &draft)
+        }
         IndexCommand::OnlinePubkey => {
             println!(
                 "{}",
@@ -1900,12 +1937,7 @@ fn index_verify(
     previous: Option<&std::path::Path>,
     targets_only: bool,
 ) -> Result<()> {
-    let root: vesper_meta::Signed<vesper_meta::RootSigned> = read_json(&index.join("root.json"))?;
-    vesper_meta::verify_role(
-        &root,
-        &root.signed.keys,
-        root.signed.roles.get("root").context("root role missing")?,
-    )?;
+    let root = root::verify_index_roots(index, previous)?;
     let routes: vesper_meta::Signed<RoutesSigned> = read_json(&index.join("routes.json"))?;
     vesper_meta::verify_routes(&routes, &root)?;
     if let Some(base) = previous {

@@ -136,8 +136,10 @@ test belongs to `vesper-client`; set `VESPER_REAL_INDEX` to an explicitly
 selected public index and run `cargo test -p vesper-client real_github_index_install
 -- --ignored --nocapture`. This only reads the selected remote index and assets.
 
-The trusted root is compiled from
-[`crates/vesper-client/config/root.json`](../crates/vesper-client/config/root.json).
+The trusted root anchor is compiled from
+[`crates/vesper-client/config/root.json`](../crates/vesper-client/config/root.json);
+renewed or rotated catalogue roots are followed through `<N>.root.json` files
+([root renewal](../docs/index-layout.md#root-renewal-and-rotation)).
 Headless callers can use `install_from_index` with the no-op event sink, or
 supply an `EventSink` to task and repair APIs. No window handle enters the client
 library. Platform services use the credential target, session storage,

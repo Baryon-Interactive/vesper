@@ -117,21 +117,136 @@ fn verify_online_role_with_bootstrap<T: Serialize>(
 }
 
 fn metadata_root(base: &str) -> Result<(Signed<RootSigned>, Signed<RoutesSigned>)> {
-    let root: Signed<RootSigned> = get_json(&join_url(base, "root.json"))?;
+    let anchor = trusted_root()?;
+    let root = {
+        let _lock = ROOT_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        update_root(
+            &anchor,
+            &state_dir().join("trust"),
+            &state_dir().join("metadata"),
+            vesper_meta::now_unix(),
+            |name| fetch_optional_json(&join_url(base, name)),
+        )?
+    };
     let routes: Signed<RoutesSigned> = get_json(&join_url(base, "routes.json"))?;
-    let trusted = trusted_root()?;
-    if !root_matches_trusted(&root, &trusted)? {
-        anyhow::bail!("index root does not match the launcher's trusted root")
-    }
-    if let Some(role) = root.signed.roles.get("root") {
-        verify_role(&root, &root.signed.keys, role)?;
-    }
     verify_routes(&routes, &root)?;
     Ok((root, routes))
 }
 
-fn root_matches_trusted(root: &Signed<RootSigned>, trusted: &Signed<RootSigned>) -> Result<bool> {
-    Ok(serde_json::to_value(root)? == serde_json::to_value(trusted)?)
+/// Serialises root updates so concurrent catalogue requests never interleave
+/// cache writes.
+static ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Upper bound on root versions followed in one update, as in TUF clients.
+const MAX_ROOT_ROTATIONS: usize = 256;
+
+/// Establish the current catalogue root by TUF root chaining.
+///
+/// Starts from the trust anchor (the embedded root or `VESPER_TRUSTED_ROOT`), or
+/// from the newest root previously verified from that anchor, then follows
+/// `N+1.root.json`, `N+2.root.json`, ... until the index has no further version.
+/// Each successor must be exactly one version higher and signed by a threshold
+/// of the previous root's keys and by a threshold of its own. Every verified
+/// root is cached immediately. The final root must not be expired, and the
+/// index's `root.json` must equal it, which rejects a rolled-back `root.json`.
+///
+/// `fetch` returns `Ok(None)` when the named file does not exist on the index.
+fn update_root(
+    anchor: &Signed<RootSigned>,
+    trust_dir: &std::path::Path,
+    metadata_dir: &std::path::Path,
+    now: u64,
+    mut fetch: impl FnMut(&str) -> Result<Option<Signed<RootSigned>>>,
+) -> Result<Signed<RootSigned>> {
+    vesper_meta::verify_root_self(anchor).context("trusted root")?;
+    let cache = trust_dir.join(format!(
+        "root-{}.json",
+        &vesper_meta::metadata_hash(anchor)?[..16]
+    ));
+    let mut trusted = anchor.clone();
+    match load_cached_root(&cache) {
+        Ok(Some(cached)) if cached.signed.version > anchor.signed.version => trusted = cached,
+        Ok(_) => {}
+        Err(error) => eprintln!("ignoring unusable cached catalogue root: {error:#}"),
+    }
+    for _ in 0..MAX_ROOT_ROTATIONS {
+        let version = trusted
+            .signed
+            .version
+            .checked_add(1)
+            .context("root version overflow")?;
+        let name = vesper_meta::versioned_root_name(version);
+        let Some(next) = fetch(&name).with_context(|| format!("fetch {name}"))? else {
+            break;
+        };
+        vesper_meta::verify_root_successor(&trusted, &next)
+            .with_context(|| format!("rejected {name}"))?;
+        if vesper_meta::online_roles_changed(&trusted.signed, &next.signed) {
+            forget_online_metadata(metadata_dir);
+        }
+        fs::create_dir_all(trust_dir)?;
+        let temp = cache.with_extension("json.tmp");
+        fs::write(&temp, canonical_bytes(&next)?)?;
+        fs::rename(&temp, &cache)?;
+        eprintln!("catalogue root updated to version {}", next.signed.version);
+        trusted = next;
+    }
+    if trusted.signed.expires <= now {
+        anyhow::bail!(
+            "catalogue root version {} expired at {}; the index has not published a renewed root",
+            trusted.signed.version,
+            trusted.signed.expires
+        );
+    }
+    let published = fetch("root.json")
+        .context("fetch root.json")?
+        .context("index has no root.json")?;
+    if serde_json::to_value(&published)? != serde_json::to_value(&trusted)? {
+        anyhow::bail!(
+            "index root.json (version {}) does not match the verified root chain (version {}); \
+             a lower version is a rollback and a higher one needs its versioned root file",
+            published.signed.version,
+            trusted.signed.version
+        );
+    }
+    Ok(trusted)
+}
+
+fn load_cached_root(path: &std::path::Path) -> Result<Option<Signed<RootSigned>>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let root: Signed<RootSigned> = serde_json::from_slice(&bytes)?;
+    vesper_meta::verify_root_self(&root)?;
+    Ok(Some(root))
+}
+
+/// A rotated snapshot/timestamp key invalidates cached online versions (TUF
+/// fast-forward recovery): the new key starts a fresh version sequence.
+fn forget_online_metadata(metadata_dir: &std::path::Path) {
+    let Ok(entries) = fs::read_dir(metadata_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        for name in ["snapshot.json", "timestamp.json"] {
+            let _ = fs::remove_file(entry.path().join(name));
+        }
+    }
+}
+
+fn fetch_optional_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<Option<T>> {
+    let response = client()?.get(url).send()?;
+    if matches!(
+        response.status(),
+        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE
+    ) {
+        return Ok(None);
+    }
+    Ok(Some(response.error_for_status()?.json()?))
 }
 
 fn trusted_root() -> Result<Signed<RootSigned>> {
@@ -393,46 +508,317 @@ pub(crate) fn fetch_manifest_bytes(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use vesper_meta::{AppChannel, AppChannelManifest, AppSource};
+    use vesper_meta::{AppChannel, AppChannelManifest, AppSource, KeyPair};
 
     static TRUST_ROOT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    #[test]
-    fn official_root_is_accepted() {
-        let official: Signed<RootSigned> = serde_json::from_str(BUILTIN_ROOT).unwrap();
-        assert!(root_matches_trusted(&official, &official).unwrap());
+    /// An in-memory index serving `root.json` and versioned roots.
+    struct RootIndex {
+        files: BTreeMap<String, Signed<RootSigned>>,
+        requested: Vec<String>,
+    }
+
+    impl RootIndex {
+        fn new(current: &Signed<RootSigned>, chain: &[&Signed<RootSigned>]) -> Self {
+            let mut files = BTreeMap::from([("root.json".to_string(), current.clone())]);
+            for root in chain {
+                files.insert(
+                    vesper_meta::versioned_root_name(root.signed.version),
+                    (*root).clone(),
+                );
+            }
+            Self {
+                files,
+                requested: Vec::new(),
+            }
+        }
+
+        fn update(
+            &mut self,
+            anchor: &Signed<RootSigned>,
+            state: &std::path::Path,
+            now: u64,
+        ) -> Result<Signed<RootSigned>> {
+            update_root(
+                anchor,
+                &state.join("trust"),
+                &state.join("metadata"),
+                now,
+                |name| {
+                    self.requested.push(name.to_string());
+                    Ok(self.files.get(name).cloned())
+                },
+            )
+        }
+    }
+
+    const NOW: u64 = 1_800_000_000;
+
+    fn root_payload(
+        version: u64,
+        expires: u64,
+        root_keys: &[&KeyPair],
+        threshold: u32,
+        online: &KeyPair,
+    ) -> RootSigned {
+        let mut keys: BTreeMap<String, String> = root_keys
+            .iter()
+            .map(|key| (key.keyid.clone(), key.public_hex()))
+            .collect();
+        keys.insert(online.keyid.clone(), online.public_hex());
+        let online_role = vesper_meta::RoleSpec {
+            keyids: vec![online.keyid.clone()],
+            threshold: 1,
+        };
+        RootSigned {
+            typ: "root".into(),
+            spec_version: "1.0.0".into(),
+            version,
+            expires,
+            keys,
+            roles: BTreeMap::from([
+                (
+                    "root".into(),
+                    vesper_meta::RoleSpec {
+                        keyids: root_keys.iter().map(|key| key.keyid.clone()).collect(),
+                        threshold,
+                    },
+                ),
+                ("snapshot".into(), online_role.clone()),
+                ("timestamp".into(), online_role),
+            ]),
+        }
+    }
+
+    fn signed_root(payload: RootSigned, signers: &[&KeyPair]) -> Signed<RootSigned> {
+        vesper_meta::sign(payload, signers).unwrap()
+    }
+
+    fn keys<const N: usize>() -> [KeyPair; N] {
+        std::array::from_fn(|_| KeyPair::generate())
     }
 
     #[test]
-    fn different_root_is_rejected_without_override() {
+    fn embedded_official_root_is_self_signed() {
         let official: Signed<RootSigned> = serde_json::from_str(BUILTIN_ROOT).unwrap();
-        let mut different = official.clone();
-        different
-            .signed
-            .keys
-            .insert("different".into(), "key".into());
-        assert!(!root_matches_trusted(&different, &official).unwrap());
+        vesper_meta::verify_root_self(&official).unwrap();
     }
 
     #[test]
-    fn different_root_is_accepted_with_explicit_override() {
+    fn unchanged_root_is_accepted_and_different_root_is_rejected() {
+        let [a, b, c, online] = keys::<4>();
+        let v1 = signed_root(
+            root_payload(1, NOW + 100, &[&a, &b, &c], 2, &online),
+            &[&a, &b],
+        );
+        let state = tempfile::tempdir().unwrap();
+        let mut index = RootIndex::new(&v1, &[]);
+        assert_eq!(
+            index.update(&v1, state.path(), NOW).unwrap().signed.version,
+            1
+        );
+        assert_eq!(index.requested, ["2.root.json", "root.json"]);
+
+        // A different self-signed root that does not chain from the anchor.
+        let [x, y] = keys::<2>();
+        let other = signed_root(root_payload(1, NOW + 100, &[&x, &y], 2, &online), &[&x, &y]);
+        let error = RootIndex::new(&other, &[])
+            .update(&v1, state.path(), NOW)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("does not match the verified root chain"));
+    }
+
+    #[test]
+    fn renewed_root_is_followed_and_cached() {
+        let [a, b, c, online] = keys::<4>();
+        // The anchor is already expired; renewal by the same keys recovers it.
+        let v1 = signed_root(
+            root_payload(1, NOW - 1, &[&a, &b, &c], 2, &online),
+            &[&a, &b],
+        );
+        let v2 = signed_root(
+            root_payload(2, NOW + 365 * 86400, &[&a, &b, &c], 2, &online),
+            &[&b, &c],
+        );
+        let state = tempfile::tempdir().unwrap();
+        let error = RootIndex::new(&v1, &[&v1])
+            .update(&v1, state.path(), NOW)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("expired"));
+
+        let mut index = RootIndex::new(&v2, &[&v1, &v2]);
+        let trusted = index.update(&v1, state.path(), NOW).unwrap();
+        assert_eq!(trusted.signed.version, 2);
+        assert_eq!(index.requested, ["2.root.json", "3.root.json", "root.json"]);
+
+        // The next start begins from the cached version 2 root.
+        let mut index = RootIndex::new(&v2, &[&v1, &v2]);
+        assert_eq!(
+            index.update(&v1, state.path(), NOW).unwrap().signed.version,
+            2
+        );
+        assert_eq!(index.requested, ["3.root.json", "root.json"]);
+    }
+
+    #[test]
+    fn rotated_root_keys_are_trusted_through_the_chain() {
+        let [a, b, c, d, e, f, online, online2] = keys::<8>();
+        let v1 = signed_root(
+            root_payload(1, NOW + 100, &[&a, &b, &c], 2, &online),
+            &[&a, &b],
+        );
+        // Version 2 replaces every root key and the online key; it is signed by
+        // a threshold of the old keys and a threshold of the new keys.
+        let v2 = signed_root(
+            root_payload(2, NOW + 100, &[&d, &e, &f], 2, &online2),
+            &[&a, &c, &d, &e],
+        );
+        // Version 3 is signed only by the new keys.
+        let v3 = signed_root(
+            root_payload(3, NOW + 200, &[&d, &e, &f], 2, &online2),
+            &[&e, &f],
+        );
+        let state = tempfile::tempdir().unwrap();
+        let cached_online = state.path().join("metadata/some.app");
+        fs::create_dir_all(&cached_online).unwrap();
+        fs::write(cached_online.join("timestamp.json"), "{}").unwrap();
+        fs::write(cached_online.join("targets.json"), "{}").unwrap();
+
+        let trusted = RootIndex::new(&v3, &[&v1, &v2, &v3])
+            .update(&v1, state.path(), NOW)
+            .unwrap();
+        assert_eq!(trusted.signed.version, 3);
+        assert!(trusted.signed.keys.contains_key(&online2.keyid));
+        // The rotated online key starts a fresh snapshot/timestamp sequence.
+        assert!(!cached_online.join("timestamp.json").exists());
+        assert!(cached_online.join("targets.json").exists());
+    }
+
+    #[test]
+    fn forged_next_root_is_rejected_and_not_cached() {
+        let [a, b, c, online, attacker1, attacker2] = keys::<6>();
+        let v1 = signed_root(
+            root_payload(1, NOW + 100, &[&a, &b, &c], 2, &online),
+            &[&a, &b],
+        );
+        let forgeries = [
+            // Self-signed by attacker keys only.
+            signed_root(
+                root_payload(2, NOW + 100, &[&attacker1, &attacker2], 2, &online),
+                &[&attacker1, &attacker2],
+            ),
+            // One stolen old key is below the previous threshold.
+            signed_root(
+                root_payload(2, NOW + 100, &[&a, &attacker1], 1, &online),
+                &[&a, &attacker1],
+            ),
+            // A threshold of old keys, but not of the new root's own keys.
+            signed_root(
+                root_payload(2, NOW + 100, &[&attacker1, &attacker2], 2, &online),
+                &[&a, &b],
+            ),
+        ];
+        for forged in forgeries {
+            let state = tempfile::tempdir().unwrap();
+            let error = RootIndex::new(&forged, &[&v1, &forged])
+                .update(&v1, state.path(), NOW)
+                .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("rejected 2.root.json"),
+                "{error:#}"
+            );
+            assert!(!state.path().join("trust").exists());
+        }
+        // A tampered payload invalidates an otherwise valid signature.
+        let mut tampered = signed_root(
+            root_payload(2, NOW + 100, &[&a, &b, &c], 2, &online),
+            &[&a, &b],
+        );
+        tampered.signed.expires += 1;
+        let state = tempfile::tempdir().unwrap();
+        assert!(RootIndex::new(&tampered, &[&tampered])
+            .update(&v1, state.path(), NOW)
+            .is_err());
+    }
+
+    #[test]
+    fn root_rollback_and_version_gaps_are_rejected() {
+        let [a, b, c, online] = keys::<4>();
+        let payload = |version| root_payload(version, NOW + 100, &[&a, &b, &c], 2, &online);
+        let v1 = signed_root(payload(1), &[&a, &b]);
+        let v2 = signed_root(payload(2), &[&a, &b]);
+        let v3 = signed_root(payload(3), &[&a, &b]);
+        let state = tempfile::tempdir().unwrap();
+        RootIndex::new(&v3, &[&v1, &v2, &v3])
+            .update(&v1, state.path(), NOW)
+            .unwrap();
+
+        // After version 3 is trusted, an index rolled back to version 2 fails.
+        let error = RootIndex::new(&v2, &[&v1, &v2])
+            .update(&v1, state.path(), NOW)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("does not match the verified root chain"));
+
+        // Versioned files must hold exactly the next version.
+        let fresh = tempfile::tempdir().unwrap();
+        let mut gap = RootIndex::new(&v3, &[&v1]);
+        gap.files.insert("2.root.json".into(), v3.clone());
+        let error = gap.update(&v1, fresh.path(), NOW).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("rollback or gap"),
+            "{error:#}"
+        );
+        let mut rollback = RootIndex::new(&v1, &[&v1]);
+        rollback.files.insert("2.root.json".into(), v1.clone());
+        let error = rollback.update(&v1, fresh.path(), NOW).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("rollback or gap"),
+            "{error:#}"
+        );
+
+        // A newer root.json without its versioned file cannot be trusted.
+        let error = RootIndex::new(&v3, &[&v1, &v2])
+            .update(&v1, fresh.path(), NOW)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("does not match the verified root chain"));
+    }
+
+    #[test]
+    fn newer_trust_anchor_supersedes_older_cache() {
+        let [a, b, c, online] = keys::<4>();
+        let payload = |version| root_payload(version, NOW + 100, &[&a, &b, &c], 2, &online);
+        let v1 = signed_root(payload(1), &[&a, &b]);
+        let v2 = signed_root(payload(2), &[&a, &b]);
+        let state = tempfile::tempdir().unwrap();
+        // A client release that embeds version 2 does not need 2.root.json.
+        let mut index = RootIndex::new(&v2, &[&v1]);
+        assert_eq!(
+            index.update(&v2, state.path(), NOW).unwrap().signed.version,
+            2
+        );
+        assert_eq!(index.requested, ["3.root.json", "root.json"]);
+    }
+
+    #[test]
+    fn development_override_replaces_the_embedded_anchor() {
         let _lock = TRUST_ROOT_ENV_LOCK.lock().unwrap();
-        let official: Signed<RootSigned> = serde_json::from_str(BUILTIN_ROOT).unwrap();
-        let mut development = official.clone();
-        development
-            .signed
-            .keys
-            .insert("different".into(), "key".into());
+        let [a, online] = keys::<2>();
+        let development = signed_root(root_payload(1, NOW + 100, &[&a], 1, &online), &[&a]);
         let temp = tempfile::NamedTempFile::new().unwrap();
         fs::write(temp.path(), serde_json::to_vec(&development).unwrap()).unwrap();
         let previous = std::env::var_os(TRUSTED_ROOT_ENV);
         std::env::set_var(TRUSTED_ROOT_ENV, temp.path());
-        assert!(root_matches_trusted(&development, &trusted_root().unwrap()).unwrap());
+        let anchor = trusted_root().unwrap();
         if let Some(previous) = previous {
             std::env::set_var(TRUSTED_ROOT_ENV, previous);
         } else {
             std::env::remove_var(TRUSTED_ROOT_ENV);
         }
+        assert!(anchor.signed.keys.contains_key(&a.keyid));
+        let state = tempfile::tempdir().unwrap();
+        RootIndex::new(&development, &[])
+            .update(&anchor, state.path(), NOW)
+            .unwrap();
     }
 
     #[test]
