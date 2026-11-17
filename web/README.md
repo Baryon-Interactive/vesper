@@ -85,6 +85,9 @@ Browsers download packs directly, so each source must allow cross-origin
 `GET` with a `Range` header and expose `Content-Range`. Cloudflare R2 and
 Hugging Face can do this. GitHub Release downloads send no CORS headers, so a
 GitHub-only game needs a CORS proxy source before it can play in the browser.
+Some static hosts ignore `Range` and always send the whole file with `200`
+(Cloudflare Workers static assets do); put a small Worker in front that
+answers single ranges with `206`, or use R2.
 
 ## Development
 
@@ -135,7 +138,8 @@ site allows framing only by the store. Deploy them to two different origins,
 each at the root of its host name, because the service worker and runtime use
 absolute paths. The store is a single-page app: unknown paths must serve
 `index.html`, which Cloudflare Pages does by default when there is no
-`404.html`. To test a production build locally, build with `127.0.0.1`
+`404.html`. The play site also gets a `_redirects` rule that sends `/` to the
+store. To test a production build locally, build with `127.0.0.1`
 origins and serve each folder with `serve.mjs` (`--spa` for the store); it
 applies the `/*` rules from `_headers`.
 
@@ -153,4 +157,5 @@ applies the `/*` rules from `_headers`.
   (Emscripten/WASI bridging). Engines must load files with `fetch` or XHR.
 - The chunk cache uses Cache Storage, with no quota management or eviction.
 - No CORS proxy for GitHub Releases, no pre-rendered store pages for search
-  engines, no cloud saves, and no deployment workflow or domains yet.
+  engines, no cloud saves, and no deployment workflow yet. The public store at
+  <https://vesperplay.xyz> is deployed by hand.

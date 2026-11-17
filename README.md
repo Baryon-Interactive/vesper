@@ -11,9 +11,12 @@ licensed under Apache-2.0.
 
 ## Download
 
-Players can download the Windows client installer, `Vesper-Setup-0.7.0-windows-x64.exe`,
-from the 0.7.0 Release. Developers can download the `vesper` command-line tool
-for Linux, Windows or macOS. The CLI is a command-line tool, not a desktop app.
+Players download the Vesper client from the latest Release: the Windows
+installer (`Vesper-Setup-<version>-windows-x64.exe`), the macOS disk image
+(`Vesper-<version>-macos-universal.dmg`, Apple Silicon and Intel) or the Linux
+AppImage or `.deb` (`Vesper-<version>-linux-x64.*`). Developers download the
+`vesper` command-line tool (`vesper-cli-*`) for Linux, Windows or macOS. The CLI
+is a command-line tool, not the player app.
 
 ## How it works
 

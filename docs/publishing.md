@@ -45,6 +45,16 @@ vesper inspect --manifest ./dist-v1/manifest.cbor.zst
 vesper publish ./dist-v1 --owner example --repo game-builds --tag v1.0.0 --metadata-dir ./metadata --channel stable
 ```
 
+Each channel holds one build for one platform. To ship several platforms, pack
+each build with its `--platform` (`windows-x64`, `macos-arm64`, `macos-x64` or
+`linux-x64`) and publish it to a channel named `<channel>-<platform>`, for
+example `stable-windows-x64`, `stable-macos-arm64` and `stable-linux-x64`. When a
+player installs `stable`, the client first looks for `stable-<platform>` for its
+own computer, then accepts plain `stable` if that build's platform matches. Apple
+Silicon Macs fall back to `macos-x64` builds, which run under Rosetta 2. On macOS
+and Linux, files packed with an execute bit, and the manifest's launch
+executable, are installed as executable.
+
 The publisher uploads the build manifest and packs to the immutable build
 release, checks remote assets, increments the local targets version, binds the
 exact store/description lengths and SHA-256 hashes, and signs with the developer

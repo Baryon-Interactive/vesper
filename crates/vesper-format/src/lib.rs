@@ -680,6 +680,23 @@ pub fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
+/// Mode recorded for a packed file: 0o755 when any execute bit is set on Unix,
+/// otherwise 0o644. Windows has no execute bit, so builds packed there record 0o644
+/// and installers rely on the manifest's launch target instead.
+pub fn packed_file_mode(path: &Path) -> Result<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = fs::metadata(path)?.permissions().mode() & 0o111 != 0;
+        Ok(if executable { 0o755 } else { 0o644 })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(0o644)
+    }
+}
+
 pub fn hash_file(path: &Path) -> Result<[u8; 32]> {
     let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut hasher = blake3::Hasher::new();
@@ -938,7 +955,7 @@ pub fn build_from_directory_with_previous(
         let mut file = FileEntry {
             path: relative,
             size: bytes.len() as u64,
-            mode: 0o644,
+            mode: packed_file_mode(&path)?,
             content_hash: hash_file(&path)?,
             chunks: Vec::new(),
         };
@@ -1081,6 +1098,52 @@ pub fn read_frame_at(path: &Path, offset: u64, frame_len: u64) -> Result<PackFra
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_records_execute_bit_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let input = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let game = input.path().join("game");
+        let data = input.path().join("data.bin");
+        fs::write(
+            &game,
+            b"#!/bin/sh
+echo game
+",
+        )
+        .unwrap();
+        fs::write(&data, b"payload").unwrap();
+        fs::set_permissions(&game, fs::Permissions::from_mode(0o750)).unwrap();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o600)).unwrap();
+        let built = build_from_directory(
+            input.path(),
+            output.path(),
+            "demo".into(),
+            "linux-x64".into(),
+            "1".into(),
+            ChunkingParams {
+                min_size: 64,
+                avg_size: 256,
+                max_size: 1024,
+            },
+            1024 * 1024,
+        )
+        .unwrap();
+        let mode = |name: &str| {
+            built
+                .manifest
+                .files
+                .iter()
+                .find(|f| f.path == name)
+                .unwrap()
+                .mode
+        };
+        assert_eq!(mode("game"), 0o755);
+        assert_eq!(mode("data.bin"), 0o644);
+    }
+
     use super::*;
 
     #[test]
