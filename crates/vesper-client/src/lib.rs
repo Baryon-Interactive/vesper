@@ -37,6 +37,7 @@ pub use install::{
 pub use library::list_installed;
 pub use media::verify_media;
 /// Launch a game using the platform process service.
+pub use platform::host::{host_platforms, resolve_channel};
 pub use platform::process::launch_game;
 pub use runtime::{runtime_allowlist, validate_runtime_rules};
 pub use settings::{get_settings, load_settings, save_settings, Settings};

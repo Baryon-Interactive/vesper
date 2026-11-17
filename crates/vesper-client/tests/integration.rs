@@ -283,12 +283,20 @@ impl Drop for IndexServer {
     }
 }
 
+/// Fixtures are built for the computer running the tests, as a publisher builds one channel per platform.
+fn host_platform() -> String {
+    vesper_client::host_platforms()
+        .first()
+        .expect("tests need a supported host platform")
+        .to_string()
+}
+
 fn build(input: &Path, output: &Path, app_id: &str, version: &str) -> vesper_format::BuildOutput {
     build_from_directory(
         input,
         output,
         app_id.into(),
-        "windows-x64".into(),
+        host_platform(),
         version.into(),
         ChunkingParams {
             min_size: 256,
@@ -462,7 +470,7 @@ fn launcher_index_fresh_install_uses_each_pack_release() {
         &input,
         &temp.path().join("r2"),
         "test.split".into(),
-        "windows-x64".into(),
+        host_platform(),
         "2".into(),
         ChunkingParams {
             min_size: 256,
@@ -631,7 +639,7 @@ fn launcher_delta_progress_counts_wire_bytes_and_local_reuse() {
         &input,
         &temp.path().join("v4"),
         "test.progress".into(),
-        "windows-x64".into(),
+        host_platform(),
         "4".into(),
         params.clone(),
         8 * 1024 * 1024,
@@ -647,7 +655,7 @@ fn launcher_delta_progress_counts_wire_bytes_and_local_reuse() {
         &input,
         &temp.path().join("v5"),
         "test.progress".into(),
-        "windows-x64".into(),
+        host_platform(),
         "5".into(),
         params,
         8 * 1024 * 1024,

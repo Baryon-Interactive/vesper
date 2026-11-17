@@ -251,6 +251,12 @@ impl Installer {
                 let _ = fs::remove_dir_all(&staging_root);
                 anyhow::bail!("materialized file hash mismatch for {}", file.path);
             }
+            let launch_target = manifest
+                .install
+                .launch
+                .as_ref()
+                .is_some_and(|launch| launch.executable == file.path);
+            apply_file_mode(&staged, file.mode, launch_target)?;
             entries.push(JournalEntry {
                 target: file.path.clone(),
                 staged: Some(path_from_root(&staged, &self.root)),
@@ -490,7 +496,7 @@ impl Installer {
             if let Some(backup) = backup {
                 if target.exists() && !backup.exists() {
                     if let Some(parent) = backup.parent() {
-                        ensure_safe_parent(parent)?;
+                        ensure_safe_parent(&self.root, parent)?;
                     }
                     rename_with_retry(&target, &backup)
                         .with_context(|| format!("backup {}", target.display()))?;
@@ -500,7 +506,7 @@ impl Installer {
                 let staged = self.root.join(path_to_os(staged));
                 if staged.exists() {
                     if let Some(parent) = target.parent() {
-                        ensure_safe_parent(parent)?;
+                        ensure_safe_parent(&self.root, parent)?;
                     }
                     rename_with_retry(&staged, &target)
                         .with_context(|| format!("install {}", target.display()))?;
@@ -564,6 +570,28 @@ impl Installer {
     }
 }
 
+/// On Unix, make a file runnable when its packed mode has an execute bit or it is the
+/// manifest's launch target (builds packed on Windows record 0o644 for every file).
+/// Windows has no execute bit, so this does nothing there.
+fn apply_file_mode(path: &Path, mode: u32, launch_target: bool) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let bits = if mode & 0o111 != 0 || launch_target {
+            0o755
+        } else {
+            0o644
+        };
+        fs::set_permissions(path, fs::Permissions::from_mode(bits))
+            .with_context(|| format!("set permissions on {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode, launch_target);
+    }
+    Ok(())
+}
+
 fn replace_file(from: PathBuf, to: PathBuf) -> Result<()> {
     if to.exists() {
         fs::remove_file(&to)?;
@@ -589,9 +617,15 @@ fn clear_chunk_store(control: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_safe_parent(parent: &Path) -> Result<()> {
-    let mut current = PathBuf::new();
-    for component in parent.components() {
+/// Refuses to write through a symlink or reparse point inside the install root. Directories above
+/// the root are the user's choice (macOS `/var` and `/tmp` are themselves symlinks), so only the
+/// components below `root` are checked.
+fn ensure_safe_parent(root: &Path, parent: &Path) -> Result<()> {
+    let relative = parent
+        .strip_prefix(root)
+        .with_context(|| format!("{} is outside the install root", parent.display()))?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
         current.push(component.as_os_str());
         if current.exists() && fs::symlink_metadata(&current)?.file_type().is_symlink() {
             anyhow::bail!(
@@ -854,6 +888,52 @@ fn unix_seconds() -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_install_marks_executables_and_launch_target_runnable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mode_of = |name: &str| {
+            fs::metadata(dir.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        for name in ["packed-exec", "plain", "launcher"] {
+            fs::write(dir.path().join(name), b"x").unwrap();
+            fs::set_permissions(dir.path().join(name), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        apply_file_mode(&dir.path().join("packed-exec"), 0o755, false).unwrap();
+        apply_file_mode(&dir.path().join("plain"), 0o644, false).unwrap();
+        apply_file_mode(&dir.path().join("launcher"), 0o644, true).unwrap();
+        assert_eq!(mode_of("packed-exec"), 0o755);
+        assert_eq!(mode_of("plain"), 0o644);
+        assert_eq!(mode_of("launcher"), 0o755);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_root_below_a_symlink_is_allowed_but_symlinks_inside_it_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir_all(real.join("outside")).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
+        let root = dir.path().join("link").join("Game");
+        fs::create_dir_all(&root).unwrap();
+        ensure_safe_parent(&root, &root.join("data").join("maps")).unwrap();
+        assert!(real.join("Game").join("data").join("maps").is_dir());
+        std::os::unix::fs::symlink(real.join("outside"), root.join("escape")).unwrap();
+        let error = ensure_safe_parent(&root, &root.join("escape").join("x")).unwrap_err();
+        assert!(
+            error.to_string().contains("symlink parent is not allowed"),
+            "{error}"
+        );
+        assert!(!real.join("outside").join("x").exists());
+        assert!(ensure_safe_parent(&root, &dir.path().join("elsewhere")).is_err());
+    }
+
     use super::*;
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener, TcpStream};

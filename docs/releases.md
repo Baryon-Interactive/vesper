@@ -1,4 +1,4 @@
-# Building and publishing Vesper 0.7.0
+# Building and publishing Vesper
 
 See the [project overview](../README.md), [script inventory](../scripts/README.md)
 and [index template](../index-template/README.md).
@@ -7,8 +7,9 @@ and [index template](../index-template/README.md).
 
 Push a tag named `vesper-v<workspace-version>` to the public repository. The
 release workflow checks that the tag version matches the workspace, builds the
-CLI for Linux, Windows and macOS, builds the unsigned Windows NSIS client
-installer, and publishes a GitHub Release targeted at the tagged commit. Pull
+CLI for Linux, Windows and macOS, builds the player client for Windows (NSIS
+installer), macOS (universal disk image) and Linux (AppImage and `.deb`), and
+publishes a GitHub Release targeted at the tagged commit. Pull
 requests and manual dispatch build the same jobs and upload workflow artifacts;
 they never create a Release.
 
@@ -16,7 +17,10 @@ The published assets are:
 
 | Asset | Audience |
 | --- | --- |
-| `Vesper-Setup-0.7.0-windows-x64.exe` | Players; Windows client installer |
+| `Vesper-Setup-<version>-windows-x64.exe` | Players; Windows client installer |
+| `Vesper-<version>-macos-universal.dmg` | Players; macOS client (Apple Silicon and Intel) |
+| `Vesper-<version>-linux-x64.AppImage` | Players; portable Linux client |
+| `Vesper-<version>-linux-x64.deb` | Players; Linux client package for Debian and Ubuntu |
 | `vesper-cli-linux-x64` | Developers and index workflows; static musl CLI |
 | `vesper-cli-windows-x64.exe` | Developers; Windows CLI |
 | `vesper-cli-macos-arm64` | Developers; unsigned macOS arm64 CLI |
@@ -28,8 +32,13 @@ The published assets are:
 `sha256sum -c SHA256SUMS` (or an equivalent SHA-256 tool on Windows). macOS
 may quarantine the unsigned CLI; remove that attribute with
 `xattr -d com.apple.quarantine <file>` after downloading from a trusted Release.
-The installer is unsigned in 0.7.0, so Windows SmartScreen may warn before it
-runs. The CLI is a command-line tool and is separate from the Windows client.
+The Windows installer is unsigned, so SmartScreen may warn before it runs. The
+macOS app is ad-hoc signed and not notarized; players open it the first time
+with right-click Open, or `xattr -dr com.apple.quarantine /Applications/Vesper.app`.
+The CLI is a command-line tool and is separate from the player client.
+
+The workflow's `VESPER_VERSION` must equal the workspace version; bump both
+(plus `launcher/package.json` and `tauri.conf.json`) before tagging.
 
 ## Local reproducibility check
 
@@ -61,7 +70,10 @@ sha256sum -c ./target/release-out/SHA256SUMS
 ./target/release-out/vesper-cli-windows-x64.exe --version
 ```
 
-The CI workflow is the source of the macOS binaries and the client installer;
-those jobs are not reproduced by the local script.
+The CI workflow is the source of the macOS binaries and every client bundle;
+those jobs are not reproduced by the local script. The macOS client job builds a
+universal binary with `--target universal-apple-darwin` and checks both
+architectures with `lipo`; the Linux client job builds on Ubuntu 22.04 so the
+bundles run on that release and later.
 Both macOS CLI jobs use the `macos-latest` (Apple Silicon) runner; the x64 job adds the
 `x86_64-apple-darwin` target explicitly so it does not depend on an Intel runner.
