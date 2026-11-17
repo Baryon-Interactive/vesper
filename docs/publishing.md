@@ -72,6 +72,80 @@ create a repository, register routes, submit PRs or dispatch catalogue workflows
 For custom HTTPS hosting, copy the same three local metadata files to the
 registered base directory. No Pages setup is needed for Release hosting.
 
+## Web builds
+
+A `web-wasm32` build plays in the browser on the Vesper web store, with no
+install. Pack the folder a static web server would host (`index.html` at the
+top, relative paths) and publish it on its own channel:
+
+```powershell
+vesper pack --input ./build-web --output ./dist-web --app-id com.example.game --platform web-wasm32 --version 1.0.0 --release-tag v1.0.0-web
+vesper publish ./dist-web --owner example --repo game-builds --tag v1.0.0-web --metadata-dir ./metadata --channel stable-web-wasm32
+```
+
+Add `web-wasm32` to `platforms` in `store.json`. Browsers download packs from
+another origin, so every host they read must send CORS headers and answer
+byte ranges with `206`.
+
+**Host web builds on R2 or another S3-compatible store.** GitHub Releases
+still hold every build, but GitHub sends no CORS headers. Browsers can reach
+a GitHub-only build only through the catalogue's
+[GitHub proxy](../github-proxy/README.md), which every game shares and which
+is slower and quota-limited. With a mirror, the player downloads straight
+from the bucket and uses the proxy only as a fallback. Desktop clients use
+both sources as before.
+
+### One-time setup
+
+Do this once per game (or once for all your games, with one prefix each).
+After that, every `vesper publish` uploads to GitHub and the bucket, signs
+both sources and checks browser access, with nothing else to configure.
+
+1. Create an R2 bucket and connect a custom domain to it, for example
+   `cdn.example.com` (`r2.dev` addresses are rate limited). R2 needs a payment
+   method; see [pricing](#optional-r2-mirror).
+2. Add this CORS policy to the bucket (R2: Settings, CORS Policy):
+
+   ```json
+   [{"AllowedOrigins": ["*"], "AllowedMethods": ["GET", "HEAD"], "AllowedHeaders": ["Range"],
+     "ExposeHeaders": ["Content-Range", "Content-Length", "Accept-Ranges", "ETag"], "MaxAgeSeconds": 86400}]
+   ```
+
+   Allowing every origin is safe: the objects are public anyway, and players
+   verify every byte against the signed metadata.
+3. Create an API token for that bucket with Object Read & Write permission.
+4. Save its S3 credentials as `VESPER_R2_ACCESS_KEY_ID` and
+   `VESPER_R2_SECRET_ACCESS_KEY` (environment variables or CI secrets), and the
+   non-secret settings in `vesper.toml`:
+
+   ```toml
+   [r2]
+   bucket = "game-builds"
+   account_id = "your-account-id"
+   prefix = "game"
+   public_base = "https://cdn.example.com/game"
+   ```
+
+When a web build is published, `vesper publish` reads its manifest from
+`public_base` as a browser on another origin would. It prints
+`r2 browser access ok`, or a warning naming what is missing (a `206`
+response, `Access-Control-Allow-Origin`, or `Content-Range` in
+`Access-Control-Expose-Headers`).
+
+Other S3-compatible stores work the same way. Set `endpoint` to the store's S3
+endpoint and `region` to its signing region, for example
+`endpoint = "https://s3.eu-west-1.amazonaws.com"` and `region = "eu-west-1"`
+for AWS S3; R2 uses the default region `auto`. Requests use path-style
+addresses (`<endpoint>/<bucket>/<key>`), which the store must accept.
+`public_base` must be a public HTTPS address of the same objects, and the
+bucket needs public read access and the CORS rule above. The credential
+variables keep their `VESPER_R2_` names for every store.
+
+Store media is read by browsers too. Put the cover and screenshots where
+cross-origin reads work: the bucket, or files committed to a public
+repository and linked through `raw.githubusercontent.com`. GitHub Release
+asset URLs do not work in the browser.
+
 ## Optional R2 mirror
 
 Clients choose between GitHub and enabled mirrors using probes followed by
@@ -83,7 +157,8 @@ observations. Both measurements must be at most 30 seconds old. See
 [download source selection](architecture.md#download-source-selection).
 
 GitHub Releases is the default, with zero hosting configuration. An optional
-Cloudflare R2 mirror suits large games or high download volumes. Standard R2
+Cloudflare R2 mirror suits large games or high download volumes, and web
+builds should always have one (see [Web builds](#web-builds)). Standard R2
 storage includes 10 GB-month free each month, then costs $0.015/GB-month. Class A
 operations include 1 million free requests per month; Class B includes 10 million.
 Egress traffic is free. Enabling R2 requires a payment method. Public `r2.dev`

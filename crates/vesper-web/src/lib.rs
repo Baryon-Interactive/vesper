@@ -468,9 +468,12 @@ mod tests {
     fn plans_and_decodes_a_file_range() {
         let (_output, built) = build(WEB_PLATFORM);
         let manifest = open(&built).unwrap();
-        let plan: Value =
-            serde_json::from_str(&manifest.plan_impl("Build/game.data", 100_000, 100_010).unwrap())
-                .unwrap();
+        let plan: Value = serde_json::from_str(
+            &manifest
+                .plan_impl("Build/game.data", 100_000, 100_010)
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(plan["size"], 300_000);
         let chunks = plan["chunks"].as_array().unwrap();
         assert_eq!(chunks.len(), 1, "a ten-byte range lies in one chunk");
@@ -487,7 +490,10 @@ mod tests {
         let raw = decode_frame_impl(frame, id, chunk["raw_size"].as_u64().unwrap()).unwrap();
         let start = chunk["file_offset"].as_u64().unwrap();
         assert!(start <= 100_000 && start + raw.len() as u64 >= 100_010);
-        assert_eq!(raw[(100_000 - start) as usize], (100_000u32 * 31 % 251) as u8);
+        assert_eq!(
+            raw[(100_000 - start) as usize],
+            (100_000u32 * 31 % 251) as u8
+        );
 
         let mut tampered = frame.to_vec();
         let last = tampered.len() - 1;
@@ -502,8 +508,8 @@ mod tests {
         let bytes = fs::read(&built.manifest_path).unwrap();
         assert!(WebManifest::open_impl(&bytes, bytes.len() as u64, &"0".repeat(64)).is_err());
         assert!(WebManifest::open_impl(&bytes, 1, "").is_err());
-        let summary: Value = serde_json::from_str(&open(&built).unwrap().summary_impl().unwrap())
-            .unwrap();
+        let summary: Value =
+            serde_json::from_str(&open(&built).unwrap().summary_impl().unwrap()).unwrap();
         assert_eq!(summary["files"].as_array().unwrap().len(), 2);
 
         let (_output, desktop) = build("windows-x64");
@@ -521,18 +527,27 @@ mod tests {
                 "channels": channels, "sources": [], "metadata": {}})
             .to_string()
         };
-        let both = targets(json!({"stable": channel("windows-x64"), "stable-web-wasm32": channel(WEB_PLATFORM)}));
+        let both = targets(
+            json!({"stable": channel("windows-x64"), "stable-web-wasm32": channel(WEB_PLATFORM)}),
+        );
         assert_eq!(
-            web_channel_impl(both.as_bytes(), "stable").unwrap().as_deref(),
+            web_channel_impl(both.as_bytes(), "stable")
+                .unwrap()
+                .as_deref(),
             Some("stable-web-wasm32")
         );
         let plain = targets(json!({"stable": channel(WEB_PLATFORM)}));
         assert_eq!(
-            web_channel_impl(plain.as_bytes(), "stable").unwrap().as_deref(),
+            web_channel_impl(plain.as_bytes(), "stable")
+                .unwrap()
+                .as_deref(),
             Some("stable")
         );
         let desktop = targets(json!({"stable": channel("windows-x64")}));
-        assert_eq!(web_channel_impl(desktop.as_bytes(), "stable").unwrap(), None);
+        assert_eq!(
+            web_channel_impl(desktop.as_bytes(), "stable").unwrap(),
+            None
+        );
     }
 
     #[test]

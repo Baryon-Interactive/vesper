@@ -103,9 +103,13 @@ pack directories, never as a production retention planner. It does not repack.
 ### R2 publishing options
 
 `publish` accepts optional `--r2-bucket`, `--r2-account-id`, `--r2-endpoint`,
-`--r2-prefix` and `--r2-public-base`. Non-secret defaults are read from the
+`--r2-region`, `--r2-prefix` and `--r2-public-base`. Non-secret defaults are read from the
 current directory's `vesper.toml` `[r2]` fields `bucket`, `account_id`, `endpoint`,
-`prefix` and `public_base`; CLI values override each field. Bucket and public
+`region`, `prefix` and `public_base`; CLI values override each field. Any
+S3-compatible store works with `endpoint` and `region` (default `auto`, for R2).
+For `web-wasm32` builds, `publish` then checks that a browser on another origin
+can read the uploaded manifest (`206`, CORS, exposed `Content-Range`) and warns
+otherwise; see [web builds](publishing.md#web-builds). Bucket and public
 base are required when R2 is configured; supply account ID or endpoint.
 Prefix defaults to empty. R2 requires `--owner` and `--repo` for a complete
 GitHub-backed mirror, in both `--metadata-dir` and `--index` modes.

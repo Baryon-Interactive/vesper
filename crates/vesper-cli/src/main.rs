@@ -31,6 +31,9 @@ struct R2Options {
     account_id: Option<String>,
     #[arg(long = "r2-endpoint")]
     endpoint: Option<String>,
+    /// SigV4 region for S3-compatible stores other than R2 (default `auto`).
+    #[arg(long = "r2-region")]
+    region: Option<String>,
     #[arg(long = "r2-prefix")]
     prefix: Option<String>,
     #[arg(long = "r2-public-base")]
@@ -57,12 +60,14 @@ impl R2Options {
             bucket: self.bucket.or(old.bucket),
             account_id: self.account_id.or(old.account_id),
             endpoint: self.endpoint.or(old.endpoint),
+            region: self.region.or(old.region),
             prefix: self.prefix.or(old.prefix),
             public_base: self.public_base.or(old.public_base),
         };
         if options.bucket.is_none()
             && options.account_id.is_none()
             && options.endpoint.is_none()
+            && options.region.is_none()
             && options.prefix.is_none()
             && options.public_base.is_none()
         {
@@ -72,6 +77,7 @@ impl R2Options {
             bucket: options.bucket.context("R2 bucket is required")?,
             account_id: options.account_id.unwrap_or_default(),
             endpoint: options.endpoint,
+            region: options.region,
             prefix: options.prefix.unwrap_or_default(),
             public_base: options.public_base.context("R2 public_base is required")?,
         };
@@ -1252,6 +1258,11 @@ fn publish_local(
                 &packs_dir,
                 false,
             )?;
+            if manifest.platform == WEB_PLATFORM {
+                report_browser_access(r2, tag, &manifest_path);
+            }
+        } else if manifest.platform == WEB_PLATFORM {
+            eprintln!("note: without a mirror, browsers load this web build through the catalogue's GitHub proxy, which is slower and rate limited; add an R2 or S3 mirror (docs/publishing.md#web-builds)");
         }
         if self_hosted {
             let dir = remote
@@ -1289,6 +1300,22 @@ fn publish_local(
         remote.owner.zip(remote.repo),
         remote.r2.as_ref().map(R2Config::url_template).as_deref(),
     )
+}
+
+const WEB_PLATFORM: &str = "web-wasm32";
+
+/// Web builds are read by browsers on other origins, which need CORS and ranges.
+fn report_browser_access(r2: &R2Publisher, tag: &str, manifest_path: &std::path::Path) {
+    let Some(name) = manifest_path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    match r2.browser_access(tag, name) {
+        Ok(None) => println!("r2 browser access ok (CORS and byte ranges)"),
+        Ok(Some(problem)) => eprintln!(
+            "warning: browsers cannot read this web build from the mirror: {problem}.              Add the CORS rule from docs/publishing.md#web-builds to the bucket; until then              the web player falls back to the GitHub proxy"
+        ),
+        Err(error) => eprintln!("warning: could not check browser access to the mirror: {error:#}"),
+    }
 }
 
 /// All retained channels must be complete before the shared source is advertised.

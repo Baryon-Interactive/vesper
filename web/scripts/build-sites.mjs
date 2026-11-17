@@ -8,7 +8,8 @@
 // Origins come from the environment; without them the build targets the local
 // demo ports. Headers are written in Cloudflare Pages `_headers` format.
 //   VESPER_STORE_ORIGIN=https://vesper.example VESPER_PLAY_ORIGIN=https://play.vesper.example \
-//   VESPER_API_BASE=https://baryon-interactive.github.io/vesper-index/ npm run build
+//   VESPER_API_BASE=https://baryon-interactive.github.io/vesper-index/ \
+//   VESPER_GITHUB_PROXY=https://gh.vesper.example npm run build
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +32,9 @@ const playOrigin = origin("VESPER_PLAY_ORIGIN", "http://127.0.0.1:3240");
 if (storeOrigin === playOrigin) throw new Error("the store and play sites must be different origins");
 const defaults = JSON.parse(readFileSync(join(web, "public", "vesper-config.json"), "utf8"));
 const apiBase = process.env.VESPER_API_BASE || defaults.apiBase;
+// Optional: origin of the GitHub Release proxy (github-proxy/) for builds without a CORS mirror.
+const githubProxy = process.env.VESPER_GITHUB_PROXY ? origin("VESPER_GITHUB_PROXY", "") : undefined;
+if (!githubProxy) console.warn("VESPER_GITHUB_PROXY is not set; builds hosted only on GitHub Releases will not play");
 for (const file of ["vesper/pkg/vesper_web_bg.wasm", "vesper/root.json"]) {
   if (!existsSync(join(web, "public", file))) throw new Error(`public/${file} is missing; run npm run wasm first`);
 }
@@ -62,7 +66,7 @@ copyFileSync(join(web, "public", "favicon.svg"), join(play, "favicon.svg"));
 copyFileSync(join(web, "public", "vesper", "core.js"), join(play, "vesper", "core.js"));
 copyFileSync(join(web, "public", "vesper", "root.json"), join(play, "vesper", "root.json"));
 cpSync(join(web, "public", "vesper", "pkg"), join(play, "vesper", "pkg"), { recursive: true });
-writeFileSync(join(play, "vesper-config.json"), json({ apiBase, trustedRoot: "/vesper/root.json", storeOrigins: [storeOrigin] }));
+writeFileSync(join(play, "vesper-config.json"), json({ apiBase, trustedRoot: "/vesper/root.json", storeOrigins: [storeOrigin], githubProxy }));
 writeFileSync(join(play, "index.html"), `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${storeOrigin}/"><a href="${storeOrigin}/">Vesper</a>\n`);
 // Hosts that map "/" to index.html use the page above; others follow this rule.
 writeFileSync(join(play, "_redirects"), `/ ${storeOrigin}/ 302\n`);
