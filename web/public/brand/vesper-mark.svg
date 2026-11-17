@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <title>Vesper</title>
+  <defs>
+    <linearGradient id="vesper-trail-l" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b3f264" stop-opacity="0.15"/><stop offset="1" stop-color="#b3f264"/>
+    </linearGradient>
+    <linearGradient id="vesper-trail-r" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b3f264" stop-opacity="0.15"/><stop offset="1" stop-color="#b3f264"/>
+    </linearGradient>
+    <radialGradient id="vesper-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffd682" stop-opacity="0.45"/><stop offset="1" stop-color="#ffd682" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#0d1118"/>
+  <path d="M56 66 L128 198" stroke="url(#vesper-trail-l)" stroke-width="28" stroke-linecap="round"/>
+  <path d="M200 66 L128 198" stroke="url(#vesper-trail-r)" stroke-width="28" stroke-linecap="round"/>
+  <circle cx="128" cy="72" r="46" fill="url(#vesper-glow)"/>
+  <path d="M128,38 Q134.12,65.88 162,72 Q134.12,78.12 128,106 Q121.88,78.12 94,72 Q121.88,65.88 128,38 Z" fill="#ffd682"/>
+</svg>

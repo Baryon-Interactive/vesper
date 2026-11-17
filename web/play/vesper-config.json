@@ -1,0 +1,5 @@
+{
+  "apiBase": "https://baryon-interactive.github.io/vesper-index/",
+  "trustedRoot": "/vesper/root.json",
+  "storeOrigins": ["http://127.0.0.1:3230", "http://localhost:3230"]
+}

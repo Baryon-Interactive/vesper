@@ -15,7 +15,9 @@ agents. Read it instead of exploring the tree, and open only the files your task
 | `crates/vesper-client` | Window-independent client library: catalogue, install tasks, library, settings, gateway, platform (`src/platform/`: host platform and channel choice, credentials, launch). Trusted root: `config/root.json`. |
 | `crates/vesper-publish` | Publishing builds and metadata to GitHub Releases and mirrors. |
 | `crates/vesper-cli` | The `vesper` command-line tool ([docs/cli.md](docs/cli.md)). |
+| `crates/vesper-web` | WebAssembly build of the verification and manifest code for the web store and player. |
 | `launcher/` | Tauri v2 desktop client: `src/` (TypeScript UI), `src-tauri/` (own Cargo workspace and lockfile), `dev/` (demo catalogue, tour scripts). See [launcher/README.md](launcher/README.md). |
+| `web/` | Web store (`src/`) and play site (`play/`: service worker, launch page) for `web-wasm32` builds. See [web/README.md](web/README.md). |
 | `index-template/` | Template repository for a catalogue: workflows, schemas, `test/` (Node tests). |
 | `gateway/` | Key gateway Worker for paid builds. |
 | `scripts/` | Release build, docs check, license inventory, e2e and smoke scripts, release notes, workflow test. |
@@ -28,6 +30,7 @@ agents. Read it instead of exploring the tree, and open only the files your task
   On Windows, run cargo from a Visual Studio x64 developer environment (`VsDevCmd.bat -arch=x64`); some
   dependencies need `cl.exe`.
 - Launcher front end: `npm --prefix launcher ci`, `npm --prefix launcher run build`, `npm --prefix launcher test`.
+- Web: `npm --prefix web ci`, `npm --prefix web run wasm` (needs `wasm32-unknown-unknown` and `wasm-bindgen-cli`), `npm --prefix web test`, `npm --prefix web run build`.
 - `node --test scripts/release-workflow.test.mjs` and `node --test index-template/test/*.test.mjs`.
 - `python scripts/check-docs.py` (no BOM, LF only, no Chinese, no absolute machine paths, README under 200 lines).
 - `python scripts/third-party-licenses.py --check`; regenerate without `--check` after any lockfile change.

@@ -1,0 +1,6 @@
+{
+  "apiBase": "https://baryon-interactive.github.io/vesper-index/",
+  "trustedRoot": "/vesper/root.json",
+  "appDownload": "https://github.com/Baryon-Interactive/vesper/releases/latest",
+  "playOrigin": "http://127.0.0.1:3240"
+}
