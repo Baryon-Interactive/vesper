@@ -282,15 +282,11 @@ impl Manifest {
 fn encode_manifest_payload(manifest: &Manifest) -> Result<Vec<u8>> {
     let mut cbor = Vec::new();
     ciborium::ser::into_writer(manifest, &mut cbor).context("encode manifest CBOR")?;
-    zstd::stream::encode_all(cbor.as_slice(), 8).context("compress manifest")
+    zstd_compress(&cbor, 8).context("compress manifest")
 }
 
 fn decode_manifest_payload(bytes: &[u8]) -> Result<Manifest> {
-    let decoder = zstd::stream::read::Decoder::new(bytes).context("decompress manifest")?;
-    let mut limited = decoder.take((MAX_MANIFEST_DECOMPRESSED + 1) as u64);
-    let mut cbor = Vec::new();
-    limited
-        .read_to_end(&mut cbor)
+    let cbor = zstd_decompress_limited(bytes, MAX_MANIFEST_DECOMPRESSED as u64)
         .context("decompress manifest")?;
     if cbor.len() > MAX_MANIFEST_DECOMPRESSED {
         anyhow::bail!("manifest decompressed output exceeds limit");
@@ -466,12 +462,8 @@ impl PackFrame {
         let raw = match self.codec {
             Codec::Raw => stored,
             Codec::Zstd => {
-                let decoder = zstd::stream::read::Decoder::new(stored.as_slice())
-                    .context("decompress chunk")?;
-                let mut limited = decoder.take(u64::from(self.raw_size).saturating_add(1));
-                let mut raw = Vec::new();
-                limited.read_to_end(&mut raw).context("decompress chunk")?;
-                raw
+                zstd_decompress_limited(&stored, u64::from(self.raw_size))
+                    .context("decompress chunk")?
             }
         };
         if raw.len() as u32 != self.raw_size {
@@ -741,6 +733,9 @@ impl PackWriter {
         self.file.flush()?;
         self.file.sync_all()?;
         let temporary_path = self.path.clone();
+        // Close the file before renaming it (required on Windows). WebAssembly
+        // builds never pack, and their File stub has no Drop.
+        #[allow(clippy::drop_non_drop)]
         drop(self.file);
         let hash = *self.hasher.finalize().as_bytes();
         let final_name = format!("pack-{}.vpack", hex::encode(hash));
@@ -1026,12 +1021,43 @@ pub fn build_from_directory_with_previous(
 }
 
 fn choose_codec(raw: &[u8]) -> Result<(Codec, Vec<u8>)> {
-    let compressed = zstd::stream::encode_all(raw, 3)?;
+    let compressed = zstd_compress(raw, 3)?;
     if compressed.len().saturating_mul(100) < raw.len().saturating_mul(98) {
         Ok((Codec::Zstd, compressed))
     } else {
         Ok((Codec::Raw, raw.to_vec()))
     }
+}
+
+/// Compress with the C Zstandard library. WebAssembly builds link no C code and
+/// only decode, so packing is unavailable there.
+#[cfg(not(target_arch = "wasm32"))]
+fn zstd_compress(bytes: &[u8], level: i32) -> Result<Vec<u8>> {
+    Ok(zstd::stream::encode_all(bytes, level)?)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn zstd_compress(_bytes: &[u8], _level: i32) -> Result<Vec<u8>> {
+    anyhow::bail!("packing is not available in WebAssembly builds")
+}
+
+/// Decompress a Zstandard stream, reading at most `limit + 1` bytes so callers
+/// can reject output larger than they expect without buffering all of it.
+#[cfg(not(target_arch = "wasm32"))]
+fn zstd_decompress_limited(bytes: &[u8], limit: u64) -> io::Result<Vec<u8>> {
+    let decoder = zstd::stream::read::Decoder::new(bytes)?;
+    let mut raw = Vec::new();
+    decoder.take(limit.saturating_add(1)).read_to_end(&mut raw)?;
+    Ok(raw)
+}
+
+/// Pure-Rust decoder used in the browser, where the C library is not linked.
+#[cfg(target_arch = "wasm32")]
+fn zstd_decompress_limited(bytes: &[u8], limit: u64) -> io::Result<Vec<u8>> {
+    let decoder = ruzstd::decoding::StreamingDecoder::new(bytes).map_err(io::Error::other)?;
+    let mut raw = Vec::new();
+    decoder.take(limit.saturating_add(1)).read_to_end(&mut raw)?;
+    Ok(raw)
 }
 
 fn chrono_like_now() -> String {

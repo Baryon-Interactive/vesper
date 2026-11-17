@@ -1,0 +1,25 @@
+[package]
+publish = false
+name = "vesper-web"
+description = "WebAssembly verification and pack decoding for the Vesper browser runtime"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+brotli-decompressor = "5.0"
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+vesper-format = { path = "../vesper-format" }
+vesper-meta = { path = "../vesper-meta" }
+wasm-bindgen = "=0.2.128"
+
+[dev-dependencies]
+tempfile.workspace = true

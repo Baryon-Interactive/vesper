@@ -10,6 +10,7 @@ use rand::rngs::OsRng;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod hosting;
@@ -468,6 +469,13 @@ pub fn target_for_bytes(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn now_unix() -> u64 {
+    // std::time::SystemTime is unavailable in browsers; use the host clock.
+    (js_sys::Date::now() / 1000.0) as u64
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

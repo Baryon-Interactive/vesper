@@ -1,8 +1,11 @@
 //! Bounded developer metadata transport and validation shared by clients and aggregation.
 use crate::{AppRoute, AppTargetsSigned, Signed};
 use anyhow::{Context, Result};
-use reqwest::{blocking::Client, redirect::Policy, Url};
+#[cfg(not(target_arch = "wasm32"))]
+use reqwest::{blocking::Client, redirect::Policy};
+#[cfg(not(target_arch = "wasm32"))]
 use std::{fs, io::Read, path::Path, time::Duration};
+use url::Url;
 
 pub const FILES: [&str; 3] = ["targets.json", "store.json", "description.md"];
 pub const MAX_FILE_SIZE: u64 = 1024 * 1024;
@@ -40,6 +43,7 @@ pub fn metadata_base(value: &str) -> Result<Url> {
     Ok(url)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn fetch_file(base: &str, name: &str) -> Result<Vec<u8>> {
     anyhow::ensure!(FILES.contains(&name), "unsupported metadata file");
     let base = metadata_base(base)?;
@@ -80,6 +84,7 @@ pub struct Bundle {
 }
 
 impl Bundle {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn fetch(
         base: &str,
         route: &AppRoute,
@@ -142,6 +147,7 @@ impl Bundle {
 
 /// Validate every file before replacing an application's directory. Preserve its
 /// central online roles until the signing pass replaces them.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn aggregate_app(index: &Path, id: &str, route: &AppRoute) -> Result<&'static str> {
     validate_app_id(id)?;
     let base = route

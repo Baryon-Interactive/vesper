@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-reqwest.workspace = true
 anyhow.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true
@@ -16,7 +15,16 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+url = "2.5"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest.workspace = true
 windows-sys.workspace = true
+
+# Browser builds verify metadata only: time and randomness come from the host.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+js-sys = "0.3"
 
 [dev-dependencies]
 tempfile.workspace = true

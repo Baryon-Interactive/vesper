@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cardMedia, displayError, formatBytes, formatEta, installedActionState, mediaIsSafe, mergeTaskSnapshot, progressPercent, updateMessage } from "./logic";
+import { cardMedia, desktopInstallable, displayError, formatBytes, formatEta, installedActionState, mediaIsSafe, mergeTaskSnapshot, progressPercent, updateMessage } from "./logic";
 
 describe("launcher display logic", () => {
   it("formats binary download sizes and eta", () => {
@@ -37,4 +37,13 @@ it("shows the game version rather than the metadata version", () => {
   const check = { available: true, target_version: "5", metadata_version: 2, message: "Update available: v2" };
   expect(updateMessage(check)).toBe("Update available: v5");
   expect(updateMessage({ ...check, available: false })).toBe("Up to date");
+});
+
+describe("desktopInstallable", () => {
+  it("hides install only for listings that name no desktop platform", () => {
+    expect(desktopInstallable({ platforms: ["web-wasm32"] })).toBe(false);
+    expect(desktopInstallable({ platforms: ["windows-x64", "web-wasm32"] })).toBe(true);
+    expect(desktopInstallable({})).toBe(true);
+    expect(desktopInstallable({ platforms: [] })).toBe(true);
+  });
 });

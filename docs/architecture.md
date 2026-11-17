@@ -15,7 +15,9 @@ static catalogue. See the [project overview](../README.md),
 | `vesper-publish` | GitHub release publishing, optional SigV4 R2 mirroring and asset verification |
 | `vesper-cli` | Packaging, inspection, publishing, index maintenance and installation commands |
 | `vesper-client` | All client logic: verified catalogue, settings, library, tasks, installation orchestration, gateway, credentials, media, runtime rules and game launch |
+| `vesper-web` | WebAssembly build of the metadata, manifest and chunk checks for browsers |
 | [Launcher](../launcher/README.md) | Tauri command wrappers, event forwarding, window setup and automatic updater |
+| [Web](../web/README.md) | Web store, catalogue worker and the service worker that streams `web-wasm32` builds |
 | [Gateway](../gateway/README.md) | Paid-game authentication, grants and DepotKey delivery through Cloudflare Worker/D1 |
 | [Index template](../index-template/README.md) | Registration, developer metadata aggregation, app PR validation, online signing and Pages |
 

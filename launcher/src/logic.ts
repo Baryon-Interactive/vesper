@@ -56,3 +56,12 @@ export type UpdateStatus = { available: boolean; target_version: string };
 export function updateMessage(check: UpdateStatus): string {
   return check.available ? `Update available: v${check.target_version}` : "Up to date";
 }
+
+const DESKTOP_PLATFORMS = ["windows-x64", "linux-x64", "macos-arm64", "macos-x64"];
+
+/** False for browser-only games: the signed listing names platforms and none of them is a desktop platform. */
+export function desktopInstallable(store: Record<string, unknown>): boolean {
+  const platforms = store.platforms;
+  if (!Array.isArray(platforms) || platforms.length === 0) return true;
+  return platforms.some((platform) => DESKTOP_PLATFORMS.includes(String(platform)));
+}

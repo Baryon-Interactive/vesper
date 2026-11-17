@@ -8,6 +8,7 @@ members = [
     "crates/vesper-cli",
     "crates/vesper-client",
     "crates/vesper-publish",
+    "crates/vesper-web",
 ]
 
 [workspace.package]

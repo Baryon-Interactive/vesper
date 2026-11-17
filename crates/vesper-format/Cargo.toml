@@ -19,7 +19,13 @@ sha2.workspace = true
 thiserror.workspace = true
 unicode-normalization.workspace = true
 walkdir.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 zstd.workspace = true
+
+# The browser build decodes with a pure-Rust Zstandard decoder; it never packs.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ruzstd = "0.8"
 
 [dev-dependencies]
 tempfile.workspace = true

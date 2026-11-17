@@ -47,6 +47,7 @@ Client: verify root -> routes -> targets + snapshot/timestamp
 | [crates/](crates/) | Rust core and CLI |
 | [crates/vesper-client/](crates/vesper-client/) | Window-independent client logic shared by UI and headless callers |
 | [launcher/](launcher/) | Tauri desktop launcher; local demo tooling in `dev/` |
+| [web/](web/README.md) | Web store and in-browser player for `web-wasm32` builds |
 | [gateway/](gateway/) | Cloudflare Workers paid-game key gateway |
 | [index-template/](index-template/) | Template for a catalogue index repository |
 | [docs/](docs/) | Architecture, CLI, publishing, releases and testing |
