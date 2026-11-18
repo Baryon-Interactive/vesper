@@ -65,17 +65,22 @@ pub fn verify_update(base: &str, app_id: &str) -> Result<(Signed<AppTargetsSigne
         }
     }
     let (targets, route) = fetch_targets(base, app_id)?;
-    let files = [
-        canonical_bytes(&targets)?,
-        vesper_meta::hosting::fetch_file(&join_url(base, &format!("apps/{app_id}")), "store.json")?,
-        vesper_meta::hosting::fetch_file(
-            &join_url(base, &format!("apps/{app_id}")),
-            "description.md",
-        )?,
-    ];
+    let app_base = join_url(base, &format!("apps/{app_id}"));
+    let store = targets
+        .signed
+        .metadata
+        .keys()
+        .map(|name| {
+            Ok((
+                name.clone(),
+                vesper_meta::hosting::fetch_file(&app_base, name)?,
+            ))
+        })
+        .collect::<Result<_>>()?;
     vesper_meta::hosting::Bundle {
         targets: targets.clone(),
-        files,
+        targets_bytes: canonical_bytes(&targets)?,
+        store,
     }
     .verify(&route, previous.as_ref())?;
     cache_metadata(app_id, "highest-targets.json", &targets)?;

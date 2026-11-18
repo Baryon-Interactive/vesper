@@ -43,20 +43,31 @@ pub fn detail(api_base: &str, app_id: &str) -> Result<Value> {
         "invalid catalogue application id"
     );
     let (targets, _) = crate::metadata::verify_app(api_base, app_id)?;
-    let mut files = Vec::new();
-    for name in ["store.json", "description.md"] {
+    // Every signed store file: store.json, descriptions and changelogs.
+    let mut store = Value::Null;
+    let mut documents = serde_json::Map::new();
+    for name in targets.signed.metadata.keys() {
         let bytes = crate::http::client()?
             .get(join_url(api_base, &format!("apps/{app_id}/{name}")))
             .send()?
             .error_for_status()?
             .bytes()?;
         vesper_meta::verify_store_bytes(&targets.signed, name, &bytes)?;
-        files.push(bytes);
+        if name == "store.json" {
+            store = serde_json::from_slice(&bytes)?;
+        } else {
+            documents.insert(
+                name.clone(),
+                Value::String(std::str::from_utf8(&bytes)?.to_owned()),
+            );
+        }
     }
+    let description = documents.get("description.md").cloned().unwrap_or_default();
     Ok(serde_json::json!({
         "app_id": app_id,
-        "store": serde_json::from_slice::<Value>(&files[0])?,
-        "description": std::str::from_utf8(&files[1])?,
+        "store": store,
+        "description": description,
+        "documents": documents,
     }))
 }
 

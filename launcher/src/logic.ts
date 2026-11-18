@@ -65,3 +65,31 @@ export function desktopInstallable(store: Record<string, unknown>): boolean {
   if (!Array.isArray(platforms) || platforms.length === 0) return true;
   return platforms.some((platform) => DESKTOP_PLATFORMS.includes(String(platform)));
 }
+
+const LISTING_LABELS: Record<string, string> = {
+  "coming-soon": "Coming soon", "early-access": "Early access", released: "Released",
+  "single-player": "Single-player", "online-co-op": "Online co-op", "local-co-op": "Local co-op", "online-pvp": "Online PvP", "local-pvp": "Local PvP",
+  controller: "Controller support", "keyboard-mouse": "Keyboard and mouse", touch: "Touch controls", "cloud-saves": "Cloud saves", achievements: "Achievements",
+  "mod-support": "Mod support", "level-editor": "Level editor",
+};
+const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []);
+
+/** Release line, fact rows and changelog for the detail view, from the signed listing and documents. */
+export function listingDetail(store: Record<string, unknown>, documents: Record<string, unknown> | undefined): { release: string; facts: [string, string][]; changelog: string } {
+  const release = store.release as { status?: string; date?: string } | undefined;
+  const status = release?.status && release.status !== "released" ? LISTING_LABELS[release.status] ?? release.status : "";
+  const facts: [string, string][] = [];
+  if (release?.date) facts.push([release.status === "released" ? "Release date" : "Planned release", release.date]);
+  const publishers = strings(store.publishers);
+  if (publishers.length) facts.push(["Publisher", publishers.join(", ")]);
+  const features = strings(store.features).map((f) => LISTING_LABELS[f] ?? f);
+  if (typeof store.max_players === "number" && store.max_players > 1) features.unshift(`Up to ${store.max_players} players`);
+  if (features.length) facts.push(["Features", features.join(", ")]);
+  const languages = store.languages && typeof store.languages === "object" ? Object.keys(store.languages) : [];
+  if (languages.length) {
+    const names = new Intl.DisplayNames(["en"], { type: "language" });
+    facts.push(["Languages", languages.map((tag) => { try { return names.of(tag) ?? tag; } catch { return tag; } }).join(", ")]);
+  }
+  const changelog = typeof documents?.["changelog.md"] === "string" ? (documents["changelog.md"] as string) : "";
+  return { release: [status, status && release?.date ? release.date : ""].filter(Boolean).join(" · "), facts, changelog };
+}

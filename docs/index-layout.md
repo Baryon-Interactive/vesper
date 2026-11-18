@@ -15,6 +15,7 @@ regenerated without changing application targets.
   routes.json
   apps/<app_id>/description.md
   apps/<app_id>/store.json
+  apps/<app_id>/changelog.md, description.<lang>.md, changelog.<lang>.md   (optional)
   apps/<app_id>/targets.json
   apps/<app_id>/snapshot.json
   apps/<app_id>/timestamp.json
@@ -27,8 +28,8 @@ key id. Optional `metadata_url` selects developer hosting; omit it for app PRs.
 See the [routes schema](../index-template/schemas/routes.schema.json).
 Deleting a signed route delists the app even if its old files remain on disk.
 
-Developer hosting serves `targets.json`, `store.json` and `description.md` at
-the registered base. No developer snapshot/timestamp is needed. The default is
+Developer hosting serves `targets.json` and every store file it signs
+(`store.json`, `description.md` and any optional documents) at the registered base. No developer snapshot/timestamp is needed. The default is
 GitHub Release tag `vesper-metadata`; arbitrary HTTPS bases are also supported.
 HTTP 127.0.0.1 is permitted for local mocks only. Bases contain no credentials,
 query or fragment. Each file is limited to 1 MiB, with a 15-second timeout,
@@ -84,12 +85,17 @@ An application `targets.json` payload is:
 
 Source templates may contain only `{release}` and `{pack_id}`. Clients reject
 unknown variables, expired metadata, and versions lower than the locally
-recorded version. Required `metadata` entries bind the exact raw bytes of
-`store.json` and `description.md` by length and SHA-256, including whitespace and
-line endings. Missing entries and old targets formats are rejected. See the
+recorded version. `metadata` entries bind the exact raw bytes of every store
+file by length and SHA-256, including whitespace and line endings: always
+`store.json` and `description.md`, plus optional `changelog.md`,
+`description.<lang>.md` and `changelog.<lang>.md`, at most 32 files and 64 KiB
+per Markdown file. Missing required entries, other names and old targets
+formats are rejected. Aggregation also applies the store rules to `store.json`
+(the same rules as `vesper store check` and `scripts/validate-store.mjs`) and
+drops files the targets do not sign. See the
 [application targets schema](../index-template/schemas/app-targets.schema.json).
 `publish`, `publish-github --index`, `sign`, `promote` and channel `rollback`
-compute these entries from both files before signing. Create store files before
+compute these entries from the store files before signing. Create store files before
 publication. Re-sign targets after every store edit; advance the targets version
 for a published update.
 
@@ -176,7 +182,7 @@ Commit `root.json` and the versioned files together, and never delete old
 
 ## Client catalogue verification
 
-Pages copies raw `apps/<id>/store.json` and `description.md` byte-for-byte along
+Pages copies every raw store file in `apps/<id>/` byte-for-byte along
 with targets, snapshot, timestamp, root, versioned roots and routes. API pages supply discovery IDs.
 The client verifies the root/routes/developer/online chain, then fetches the raw
 store files and checks `metadata` length and SHA-256 before parsing and returning

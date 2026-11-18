@@ -42,10 +42,12 @@ const json = (value) => JSON.stringify(value, null, 2) + "\n";
 const headers = (rules) => Object.entries(rules).map(([path, list]) => `${path}\n${list.map((h) => `  ${h}`).join("\n")}\n`).join("");
 const common = ["X-Content-Type-Options: nosniff", "Referrer-Policy: strict-origin-when-cross-origin"];
 // Cross-origin isolation, so games get SharedArrayBuffer and WebAssembly threads.
-// Every document from the store page down to the game must send these; the
-// service worker adds COEP to game files. `credentialless` (not `require-corp`)
+// Every document from the store's /play/ page down to the game must send these;
+// the service worker adds COEP to game files. `credentialless` (not `require-corp`)
 // still loads cross-origin images, fonts and scripts, without cookies.
 // Browsers without `credentialless` ignore it and run games without isolation.
+// Only /play/* is isolated on the store: YouTube trailers do not load inside an
+// isolated page, so the store enters and leaves the play page with a full load.
 const isolation = ["Cross-Origin-Opener-Policy: same-origin", "Cross-Origin-Embedder-Policy: credentialless"];
 
 // Store: drop local-only files, write its config and a strict CSP.
@@ -58,10 +60,10 @@ writeFileSync(
   join(store, "_headers"),
   headers({
     "/*": [
-      `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data:; connect-src 'self' ${new URL(apiBase).origin} https:; worker-src 'self'; frame-src ${playOrigin}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`,
-      ...isolation,
+      `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https://i.ytimg.com; media-src https:; connect-src 'self' ${new URL(apiBase).origin} https:; worker-src 'self'; frame-src ${playOrigin} https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`,
       ...common,
     ],
+    "/play/*": isolation,
   }),
 );
 

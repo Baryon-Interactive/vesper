@@ -130,9 +130,11 @@ This writes two static sites, `web/dist/store` and `web/dist/play`. Each
 gets its own `vesper-config.json` and a Cloudflare Pages `_headers` file. The
 store's Content Security Policy allows only its own scripts and WebAssembly,
 the catalogue and https media, and frames from the play origin. The play
-site allows framing only by the store. Both sites send
-`Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`, so games are
-cross-origin isolated and get `SharedArrayBuffer`; see
+site allows framing only by the store. The play site, and the store's
+`/play/*` pages, send `Cross-Origin-Opener-Policy` and
+`Cross-Origin-Embedder-Policy`, so games are cross-origin isolated and get
+`SharedArrayBuffer`. Other store pages are not isolated, so they can embed
+YouTube trailers (youtube-nocookie.com, loaded on click); see
 [threads](../docs/publishing.md#threads-and-sharedarraybuffer). Deploy them to two different origins,
 each at the root of its host name, because the service worker and runtime use
 absolute paths. The store is a single-page app: unknown paths must serve
@@ -140,7 +142,7 @@ absolute paths. The store is a single-page app: unknown paths must serve
 `404.html`. The play site also gets a `_redirects` rule that sends `/` to the
 store. To test a production build locally, build with `127.0.0.1`
 origins and serve each folder with `serve.mjs` (`--spa` for the store); it
-applies the `/*` rules from `_headers`.
+applies the `/*` and `/prefix/*` rules from `_headers`.
 
 ## Not done yet
 

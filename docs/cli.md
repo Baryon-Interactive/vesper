@@ -186,6 +186,27 @@ the command. Workflows run aggregation every 15 minutes and on manual dispatch.
 Root keys are offline secrets; online signing keys belong only in trusted branch
 workflows. See [index layout](index-layout.md) for canonical metadata links.
 
+## Store listing
+
+```powershell
+vesper store init --title "My Game" --developer "My Studio" --homepage https://example.com --platform web-wasm32
+vesper store add-media ./art/header.png --as cover --url https://example.com/media/header.png
+vesper store check
+```
+
+All three take `--dir` (default `./metadata`).
+
+- `init` writes `store.json`, `description.md` and `changelog.md`, keeping any
+  that already exist. Repeat `--platform` for each platform.
+- `add-media <file> --as cover|capsule|logo|background|screenshot --url <https URL>`
+  reads the image size from a PNG, JPEG, WebP or GIF header, hashes the file
+  with BLAKE3 and records it. Screenshots are appended; the other roles are
+  replaced. `store.json` is rewritten with sorted keys.
+- `check` reports every problem with `store.json` and the Markdown files next
+  to it, using the catalogue's rules, and exits non-zero if there are any.
+
+The fields are described in [publishing](publishing.md#what-a-listing-can-hold).
+
 ## Flat metadata helpers
 
 These operate on the flat root/targets metadata family, separate from the

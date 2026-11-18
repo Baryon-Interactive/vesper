@@ -1,22 +1,36 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import {
+  changelog,
   desktopPlatforms,
   formatBytes,
+  formatDate,
+  gallery,
+  label,
+  languageName,
   localized,
   matches,
   parseRoute,
   platformLabel,
   playable,
+  releaseLine,
   routePath,
+  youtubeEmbed,
+  youtubeThumbnail,
   type AppDetail,
   type AppSummary,
+  type GalleryItem,
   type Media,
   type Route,
+  type Spec,
+  type Store,
+  type Trailer,
 } from "./logic";
 import { Markdown } from "./Markdown";
 import { appDetail, listApps, playEvent, playUrl, siteConfig, verifiedMedia, type Progress } from "./vesper";
 
 const languages = typeof navigator === "undefined" ? ["en"] : navigator.languages ?? [navigator.language];
+// Dates and language names follow the UI language, English until the UI is translated.
+const uiLocale = "en";
 const APP_DOWNLOAD = "https://github.com/Baryon-Interactive/vesper/releases/latest";
 
 function useRoute(): [Route, (route: Route) => void] {
@@ -34,8 +48,13 @@ function useRoute(): [Route, (route: Route) => void] {
   return [route, go];
 }
 
+/**
+ * In-app link. The play page is cross-origin isolated (COOP/COEP) and the
+ * other pages are not, so links into and out of it load a new document.
+ */
 function Link({ to, go, className, children }: { to: Route; go: (r: Route) => void; className?: string; children: ReactNode }) {
   const onClick = (event: MouseEvent) => {
+    if ((to.page === "play") !== (parseRoute(location.pathname).page === "play")) return;
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
     event.preventDefault();
     go(to);
@@ -47,7 +66,8 @@ function Link({ to, go, className, children }: { to: Route; go: (r: Route) => vo
   );
 }
 
-function Cover({ media, title, className }: { media?: Media; title: string; className: string }) {
+/** Object URL of a store image after its signed BLAKE3 checks out, or null until then. */
+function useVerified(media?: Media): string | null {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
@@ -57,6 +77,11 @@ function Cover({ media, title, className }: { media?: Media; title: string; clas
       live = false;
     };
   }, [media?.url, media?.blake3]);
+  return src;
+}
+
+function Cover({ media, title, className }: { media?: Media; title: string; className: string }) {
+  const src = useVerified(media);
   return src ? (
     <img className={className} src={src} alt="" />
   ) : (
@@ -227,13 +252,17 @@ function AppPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
   document.title = `${title} · Vesper`;
   const desktop = desktopPlatforms(app);
   const web = app.web_channel ? app.channels?.[app.web_channel] : undefined;
+  const release = releaseLine(store.release, uiLocale);
+  const updates = changelog(app.documents, languages);
   return (
     <main className="page detail">
+      <Backdrop media={store.background} />
       <section className="detail-hero">
-        <Cover media={store.cover} title={title} className="detail-cover" />
+        <Gallery items={gallery(store)} cover={store.cover} title={title} />
         <div className="detail-head">
           <p className="eyebrow">{store.developer ?? "Unknown developer"}</p>
-          <h1>{title}</h1>
+          <Logo media={store.logo} title={title} />
+          {release && <p className={`release ${store.release?.status ?? ""}`}>{release}</p>}
           <p className="summary">{localized(store.summary, languages)}</p>
           <div className="actions">
             {app.web_channel && (
@@ -254,64 +283,318 @@ function AppPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
       <div className="detail-body">
         <article>
           <Markdown source={app.description} skipTitle={title} />
-          {(store.screenshots ?? []).length > 0 && (
-            <div className="shots">
-              {store.screenshots!.map((shot) => (
-                <Cover key={shot.url} media={shot} title={title} className="shot" />
-              ))}
-            </div>
+          <SystemRequirements store={store} />
+          {updates && (
+            <section className="updates">
+              <h2>Updates</h2>
+              <Collapsible>
+                <Markdown source={updates} />
+              </Collapsible>
+            </section>
           )}
         </article>
         <aside>
-          <dl>
-            {web && (
-              <>
-                <dt>Browser build</dt>
-                <dd>
-                  Channel <code>{app.web_channel}</code>, build {web.version}
-                </dd>
-              </>
-            )}
-            {desktop.length > 0 && (
-              <>
-                <dt>Desktop</dt>
-                <dd>{desktop.map(platformLabel).join(", ")}</dd>
-              </>
-            )}
-            {Object.entries(store.requirements ?? {}).map(([key, value]) => (
-              <div key={key} className="req">
-                <dt>{key}</dt>
-                <dd>{value}</dd>
-              </div>
-            ))}
-            {(store.tags ?? []).length > 0 && (
-              <>
-                <dt>Tags</dt>
-                <dd className="tags">
-                  {store.tags!.map((t) => (
-                    <span key={t}>{t}</span>
-                  ))}
-                </dd>
-              </>
-            )}
-            {store.homepage && (
-              <>
-                <dt>Website</dt>
-                <dd>
-                  <a href={store.homepage} target="_blank" rel="noopener noreferrer">
-                    {store.homepage.replace(/^https?:\/\//, "")}
-                  </a>
-                </dd>
-              </>
-            )}
-            <dt>Verification</dt>
-            <dd className="verified">
-              <i /> Signed listing, targets version {app.targets_version}
-            </dd>
-          </dl>
+          <Facts app={app} store={store} web={web ? `Channel ${app.web_channel}, build ${web.version}` : ""} desktop={desktop} />
         </aside>
       </div>
     </main>
+  );
+}
+
+function Backdrop({ media }: { media?: Media }) {
+  const src = useVerified(media);
+  return src ? <div className="backdrop" style={{ backgroundImage: `url(${src})` }} aria-hidden /> : null;
+}
+
+/** The title logo when the listing has one; the heading text stays for screen readers. */
+function Logo({ media, title }: { media?: Media; title: string }) {
+  const src = useVerified(media);
+  return (
+    <h1 className={src ? "has-logo" : undefined}>
+      {src && <img className="logo" src={src} alt="" />}
+      <span>{title}</span>
+    </h1>
+  );
+}
+
+/** Trailers and screenshots: one large view and a strip of thumbnails. */
+function Gallery({ items, cover, title }: { items: GalleryItem[]; cover?: Media; title: string }) {
+  const [selected, setSelected] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const current = items[Math.min(selected, items.length - 1)];
+  const pick = (index: number) => {
+    setSelected(index);
+    setPlaying(false);
+  };
+  return (
+    <div className="gallery">
+      {!current ? (
+        <Cover media={cover} title={title} className="detail-cover" />
+      ) : current.kind === "image" ? (
+        <Cover media={current.media} title={title} className="detail-cover" />
+      ) : (
+        <TrailerView key={selected} trailer={current.trailer} playing={playing} onPlay={() => setPlaying(true)} title={title} />
+      )}
+      {items.length > 1 && (
+        <div className="thumbs">
+          {items.map((item, index) => (
+            <button
+              key={index}
+              className={index === selected ? "thumb on" : "thumb"}
+              aria-pressed={index === selected}
+              onClick={() => pick(index)}
+              aria-label={item.kind === "trailer" ? `Trailer ${index + 1}` : `Screenshot ${index + 1}`}
+            >
+              {item.kind === "image" ? (
+                <Cover media={item.media} title={title} className="thumb-img" />
+              ) : (
+                <TrailerThumb trailer={item.trailer} title={title} />
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TrailerThumb({ trailer, title }: { trailer: Trailer; title: string }) {
+  return (
+    <span className="thumb-trailer">
+      {trailer.kind === "youtube" ? (
+        <img className="thumb-img" src={youtubeThumbnail(trailer.id)} alt="" loading="lazy" />
+      ) : (
+        <Cover media={trailer.poster} title={title} className="thumb-img" />
+      )}
+      <i className="play-mark" />
+    </span>
+  );
+}
+
+function TrailerView({ trailer, playing, onPlay, title }: { trailer: Trailer; playing: boolean; onPlay: () => void; title: string }) {
+  const poster = useVerified(trailer.kind === "video" ? trailer.poster : undefined);
+  const name = localized(trailer.title, languages, `${title} trailer`);
+  if (trailer.kind === "video")
+    return <video className="detail-cover" src={trailer.url} poster={poster ?? undefined} controls preload="none" title={name} />;
+  // Nothing loads from YouTube until the player asks for the video.
+  if (!playing)
+    return (
+      <button className="detail-cover facade" onClick={onPlay} aria-label={`Play ${name}`}>
+        <img src={youtubeThumbnail(trailer.id)} alt="" />
+        <i className="play-mark big" />
+        <small>Plays from YouTube</small>
+      </button>
+    );
+  return (
+    <iframe
+      className="detail-cover"
+      src={youtubeEmbed(trailer.id)}
+      title={name}
+      allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+      referrerPolicy="strict-origin-when-cross-origin"
+    />
+  );
+}
+
+/** Long changelogs start folded. */
+function Collapsible({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const [long, setLong] = useState(false);
+  const body = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = body.current;
+    // Matches .collapsible-body max-height in styles.css.
+    if (el) setLong(el.scrollHeight > 340);
+  }, [children]);
+  return (
+    <div className={open || !long ? "collapsible open" : "collapsible"}>
+      <div className="collapsible-body" ref={body}>
+        {children}
+      </div>
+      {(long || open) && (
+        <button className="link-button" onClick={() => setOpen(!open)}>
+          {open ? "Show less" : "Show all updates"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+const SPEC_KEYS: (keyof Spec)[] = ["os", "cpu", "gpu", "memory", "storage", "network", "notes"];
+
+function SystemRequirements({ store }: { store: Store }) {
+  const all = store.system_requirements ?? {};
+  const platforms = Object.keys(all);
+  const [chosen, setChosen] = useState("");
+  if (platforms.length === 0) return null;
+  const platform = platforms.includes(chosen) ? chosen : platforms[0];
+  const tiers = all[platform];
+  return (
+    <section className="sysreq">
+      <h2>System requirements</h2>
+      {platforms.length > 1 && (
+        <div className="tabs">
+          {platforms.map((p) => (
+            <button key={p} className={p === platform ? "tab on" : "tab"} onClick={() => setChosen(p)}>
+              {platformLabel(p)}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="tiers">
+        {(["minimum", "recommended"] as const).map((tier) => {
+          const spec = tiers[tier];
+          if (!spec) return null;
+          return (
+            <dl key={tier}>
+              <dt className="tier">{tier === "minimum" ? "Minimum" : "Recommended"}</dt>
+              {SPEC_KEYS.filter((k) => spec[k]).map((k) => (
+                <div key={k} className="spec">
+                  <dt>{label(k)}</dt>
+                  <dd>{spec[k]}</dd>
+                </div>
+              ))}
+            </dl>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+const tick = (on?: boolean) => (on ? "✓" : "");
+
+function Facts({ app, store, web, desktop }: { app: AppDetail; store: Store; web: string; desktop: string[] }) {
+  const locale = uiLocale;
+  const languageRows = Object.entries(store.languages ?? {});
+  const links = Object.entries(store.links ?? {});
+  const features = store.features ?? [];
+  const players = store.max_players && store.max_players > 1 ? store.max_players : 0;
+  return (
+    <dl>
+      {store.release?.date && (
+        <>
+          <dt>{store.release.status === "released" ? "Release date" : "Planned release"}</dt>
+          <dd>{formatDate(store.release.date, locale)}</dd>
+        </>
+      )}
+      {store.developer && (
+        <>
+          <dt>Developer</dt>
+          <dd>{store.developer}</dd>
+        </>
+      )}
+      {(store.publishers ?? []).length > 0 && (
+        <>
+          <dt>Publisher</dt>
+          <dd>{store.publishers!.join(", ")}</dd>
+        </>
+      )}
+      {web && (
+        <>
+          <dt>Browser build</dt>
+          <dd>{web}</dd>
+        </>
+      )}
+      {desktop.length > 0 && (
+        <>
+          <dt>Desktop</dt>
+          <dd>{desktop.map(platformLabel).join(", ")}</dd>
+        </>
+      )}
+      {(features.length > 0 || players > 0) && (
+        <>
+          <dt>Features</dt>
+          <dd className="tags">
+            {players > 0 && <span>Up to {players} players</span>}
+            {features.map((f) => (
+              <span key={f}>{label(f)}</span>
+            ))}
+          </dd>
+        </>
+      )}
+      {languageRows.length > 0 && (
+        <>
+          <dt>Languages</dt>
+          <dd>
+            <table className="languages">
+              <thead>
+                <tr>
+                  <th />
+                  <th>Interface</th>
+                  <th>Audio</th>
+                  <th>Subtitles</th>
+                </tr>
+              </thead>
+              <tbody>
+                {languageRows.map(([tag, support]) => (
+                  <tr key={tag}>
+                    <th>{languageName(tag, locale)}</th>
+                    <td>{tick(support.interface)}</td>
+                    <td>{tick(support.audio)}</td>
+                    <td>{tick(support.subtitles)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </dd>
+        </>
+      )}
+      {(store.accessibility ?? []).length > 0 && (
+        <>
+          <dt>Accessibility</dt>
+          <dd className="tags">
+            {store.accessibility!.map((a) => (
+              <span key={a}>{label(a)}</span>
+            ))}
+          </dd>
+        </>
+      )}
+      {(store.content_descriptors ?? []).length > 0 && (
+        <>
+          <dt>Content</dt>
+          <dd>{store.content_descriptors!.map(label).join(", ")}</dd>
+        </>
+      )}
+      {Object.entries(store.requirements ?? {}).map(([key, value]) => (
+        <div key={key} className="req">
+          <dt>{key}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+      {(store.tags ?? []).length > 0 && (
+        <>
+          <dt>Tags</dt>
+          <dd className="tags">
+            {store.tags!.map((t) => (
+              <span key={t}>{t}</span>
+            ))}
+          </dd>
+        </>
+      )}
+      {(store.homepage || links.length > 0) && (
+        <>
+          <dt>Links</dt>
+          <dd className="links">
+            {store.homepage && (
+              <a href={store.homepage} target="_blank" rel="noopener noreferrer">
+                {store.homepage.replace(/^https?:\/\//, "").replace(/\/$/, "")}
+              </a>
+            )}
+            {links.map(([key, url]) => (
+              <a key={key} href={url} target="_blank" rel="noopener noreferrer">
+                {label(key)}
+              </a>
+            ))}
+          </dd>
+        </>
+      )}
+      <dt>Verification</dt>
+      <dd className="verified">
+        <i /> Signed listing, targets version {app.targets_version}
+        {store.updated && <>, updated {formatDate(store.updated, locale)}</>}
+      </dd>
+    </dl>
   );
 }
 

@@ -11,6 +11,8 @@ use vesper_format::{
     DEFAULT_MIN_CHUNK,
 };
 use vesper_install::Installer;
+
+mod store;
 use vesper_meta::{
     build_snapshot, build_timestamp, expires_in, read_json, sign, validate_version_and_expiry,
     verify_metadata_description, verify_role, write_json, AppChannel, AppChannelManifest, AppRoute,
@@ -236,6 +238,11 @@ enum Command {
     Index {
         #[command(subcommand)]
         command: IndexCommand,
+    },
+    /// Write and check the store listing (store.json, description and changelog).
+    Store {
+        #[command(subcommand)]
+        command: store::StoreCommand,
     },
     Inspect {
         #[arg(long)]
@@ -620,6 +627,7 @@ fn run_command(command: Command) -> Result<()> {
         Command::Sign { targets, key_file } => sign_targets_file(&targets, key_file.as_deref())?,
         Command::Launch { target, seconds } => launch_installed(&target, seconds)?,
         Command::Index { command } => run_index_command(command)?,
+        Command::Store { command } => store::run(command)?,
         Command::Inspect {
             manifest,
             depot_key_hex,
@@ -1604,6 +1612,11 @@ fn write_publish_metadata(
     fs::create_dir_all(app_dir)?;
     let targets_path = app_dir.join("targets.json");
     let metadata = vesper_meta::store_metadata(app_dir)?;
+    if let Ok(problems) = store::check(app_dir) {
+        for problem in problems {
+            eprintln!("warning: {problem}; catalogues reject listings that break the store rules (vesper store check)");
+        }
+    }
     let key = developer_key(None)?;
     let mut targets = if targets_path.exists() {
         read_json::<vesper_meta::Signed<AppTargetsSigned>>(&targets_path)?.signed

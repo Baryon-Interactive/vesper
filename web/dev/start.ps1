@@ -36,7 +36,10 @@ function Invoke-Cargo([string]$Arguments) {
 Invoke-Cargo ('build --manifest-path "' + $repo + '\Cargo.toml" -p vesper-cli') | Out-Null
 $vesper = Join-Path $repo 'target/debug/vesper.exe'
 function Invoke-Vesper([string[]]$VesperArgs) {
-  $output = & $vesper @VesperArgs 2>&1
+  # Warnings on stderr are expected (the demo serves media over http://127.0.0.1); the exit code decides.
+  $ErrorActionPreference = 'Continue'
+  $output = & $vesper @VesperArgs 2>&1 | ForEach-Object { "$_" }
+  $ErrorActionPreference = 'Stop'
   if ($LASTEXITCODE -ne 0) { throw "vesper failed: $($VesperArgs -join ' ') $output" }
   return $output
 }
@@ -94,10 +97,19 @@ foreach ($app in $apps) {
     title = @{ en = $app.Title }; summary = @{ en = $app.Summary }; tags = $app.Tags; screenshots = @(); cover = $cover
     requirements = [ordered]@{ browser = 'Recent Chrome, Edge or Firefox'; input = 'Keyboard and mouse' }
     paid = $false; price_display = 'Free'; developer = 'Vesper demo'; homepage = 'https://github.com/Baryon-Interactive/vesper'; platforms = $platforms
+    default_language = 'en'; release = [ordered]@{ status = 'early-access'; date = '2026-11-01' }
+    features = @('single-player', 'keyboard-mouse'); max_players = 1
+    languages = [ordered]@{ en = @{ interface = $true; audio = $false; subtitles = $true }; ja = @{ interface = $true } }
+    system_requirements = [ordered]@{ 'web-wasm32' = [ordered]@{ minimum = [ordered]@{ os = 'Any desktop OS'; memory = '4 GB RAM'; notes = 'Recent Chrome, Edge or Firefox' } } }
+    # A Blender Foundation open movie stands in for a trailer.
+    trailers = @(@{ kind = 'youtube'; id = 'aqz-KE-bpKQ' })
+    links = [ordered]@{ github = 'https://github.com/Baryon-Interactive/vesper' }
+    accessibility = @('remappable-controls'); publishers = @('Baryon Interactive')
   }
   Write-Utf8 (Join-Path $storeDir 'store.json') (($store | ConvertTo-Json -Depth 8) + "`n")
   $description = if ($app.Description) { $app.Description } else { $app.Summary }
   Write-Utf8 (Join-Path $storeDir 'description.md') ("# $($app.Title)`n`n$description`n")
+  Write-Utf8 (Join-Path $storeDir 'changelog.md') ("## 1.0.0`n`nFirst web build on Vesper.`n")
 
   $builds = @()
   if ($app.Windows) { $builds += @{ Dir = $app.Windows; Platform = 'windows-x64'; Channel = 'stable'; Suffix = 'win' } }
