@@ -53,7 +53,7 @@ test("listing detail reads the richer store fields and the signed changelog", ()
   const detail = listingDetail(store, { "changelog.md": "## 1.0\n" });
   expect(detail.release).toBe("Early access · 2026-11-01");
   expect(detail.facts).toEqual([
-    ["Planned release", "2026-11-01"],
+    ["Early access since", "2026-11-01"],
     ["Publisher", "Baryon Interactive"],
     ["Features", "Up to 4 players, Single-player, Online co-op"],
     ["Languages", "English, Japanese"],

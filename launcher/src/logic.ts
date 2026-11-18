@@ -79,7 +79,7 @@ export function listingDetail(store: Record<string, unknown>, documents: Record<
   const release = store.release as { status?: string; date?: string } | undefined;
   const status = release?.status && release.status !== "released" ? LISTING_LABELS[release.status] ?? release.status : "";
   const facts: [string, string][] = [];
-  if (release?.date) facts.push([release.status === "released" ? "Release date" : "Planned release", release.date]);
+  if (release?.date) facts.push([release.status === "coming-soon" ? "Planned release" : release.status === "early-access" ? "Early access since" : "Release date", release.date]);
   const publishers = strings(store.publishers);
   if (publishers.length) facts.push(["Publisher", publishers.join(", ")]);
   const features = strings(store.features).map((f) => LISTING_LABELS[f] ?? f);

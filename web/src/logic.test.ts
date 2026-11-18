@@ -9,6 +9,7 @@ import {
   matches,
   parseRoute,
   playable,
+  releaseDateLabel,
   releaseLine,
   routePath,
   youtubeEmbed,
@@ -64,6 +65,7 @@ test("listing helpers: release line, gallery order, labels, changelog language",
   expect(releaseLine({ status: "early-access" }, "en-US")).toBe("Early access");
   expect(releaseLine({ status: "coming-soon", date: "2027-03-01" }, "en-US")).toBe("Coming soon · Mar 1, 2027");
   expect(releaseLine({ status: "released" }, "en-US")).toBe("");
+  expect([releaseDateLabel("coming-soon"), releaseDateLabel("early-access"), releaseDateLabel("released")]).toEqual(["Planned release", "Early access since", "Release date"]);
   const shot = { url: "https://x/1.png", blake3: "a".repeat(64) };
   const items = gallery({ screenshots: [shot], trailers: [{ kind: "youtube", id: "dQw4w9WgXcQ" }] });
   expect(items.map((i) => i.kind)).toEqual(["trailer", "image"]);
