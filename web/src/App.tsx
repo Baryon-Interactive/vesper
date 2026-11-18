@@ -322,6 +322,7 @@ function PlayPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
   const [error, setError] = useState("");
   const [progress, setProgress] = useState<Progress>({ downloaded: 0, cached: 0, requests: 0 });
   const [started, setStarted] = useState(false);
+  const [isolated, setIsolated] = useState<boolean | null>(null);
   const frame = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
     let playOrigin = "";
@@ -333,6 +334,7 @@ function PlayPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
       if (message?.type === "ready") setReady({ version: message.version, channel: message.channel });
       if (message?.type === "started") {
         setStarted(true);
+        setIsolated(message.isolated);
         frame.current?.focus();
       }
       if (message?.type === "error") setError(message.message);
@@ -360,7 +362,16 @@ function PlayPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
         <Link to={{ page: "app", appId }} go={go} className="back">
           ← {title}
         </Link>
-        <span className={error ? "play-status error" : "play-status"}>
+        <span
+          className={error ? "play-status error" : "play-status"}
+          title={
+            isolated === null
+              ? undefined
+              : isolated
+                ? "Cross-origin isolated: SharedArrayBuffer and WebAssembly threads are available"
+                : "Not cross-origin isolated in this browser: no SharedArrayBuffer or WebAssembly threads"
+          }
+        >
           <i className={ready && !error ? "live" : ""} />
           {status}
         </span>
@@ -374,7 +385,7 @@ function PlayPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
           className="play-frame"
           src={src}
           title={title}
-          allow="autoplay; fullscreen; gamepad; microphone"
+          allow="autoplay; fullscreen; gamepad; microphone; cross-origin-isolated"
           referrerPolicy="origin"
         />
       )}

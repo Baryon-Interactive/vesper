@@ -11,13 +11,68 @@ use std::{
 use vesper_format::{Manifest, PackEntry};
 
 /// Non-secret mirror settings. The public base includes the key prefix.
+/// Any S3-compatible store works: set `endpoint` and, outside R2, `region`.
 #[derive(Clone, Default)]
 pub struct R2Config {
     pub bucket: String,
     pub account_id: String,
     pub endpoint: Option<String>,
+    /// SigV4 signing region; R2 uses `auto` (the default).
+    pub region: Option<String>,
     pub prefix: String,
     pub public_base: String,
+}
+
+/// Origin sent when checking that browsers can read mirrored web builds.
+pub const BROWSER_PROBE_ORIGIN: &str = "https://vesperplay.xyz";
+
+/// Why a browser on another origin cannot read a mirrored object, judged from
+/// the response to a cross-origin `Range` GET, or `None` when it can.
+pub fn browser_access_problem(status: u16, headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase()
+    };
+    if status != 206 {
+        return Some(format!(
+            "answered a Range request with HTTP {status} instead of 206"
+        ));
+    }
+    let origin = header("access-control-allow-origin");
+    if origin != "*" && origin != BROWSER_PROBE_ORIGIN {
+        return Some(
+            "sends no Access-Control-Allow-Origin header for other origins (allow GET from *)"
+                .into(),
+        );
+    }
+    let exposed = header("access-control-expose-headers");
+    if !exposed
+        .split(',')
+        .any(|h| matches!(h.trim(), "content-range" | "*"))
+    {
+        return Some("does not list Content-Range in Access-Control-Expose-Headers".into());
+    }
+    None
+}
+
+/// Fetch the first byte of `url` the way a browser on another origin would and
+/// report why it could not read it, or `None` when it can.
+pub fn browser_access(url: &str) -> Result<Option<String>> {
+    let (status, headers) = crate::transfer::runtime()?.block_on(async {
+        let response = crate::transfer::client()?
+            .get(url)
+            .header("Origin", BROWSER_PROBE_ORIGIN)
+            .header("Range", "bytes=0-0")
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await?;
+        anyhow::Ok((response.status(), response.headers().clone()))
+    })?;
+    Ok(browser_access_problem(status.as_u16(), &headers).map(|problem| format!("{url} {problem}")))
 }
 
 pub fn validate_url(value: &str) -> Result<Url> {
@@ -48,12 +103,24 @@ impl R2Config {
                     && self.account_id.bytes().all(|b| b.is_ascii_alphanumeric())),
             "R2 account id or endpoint is required"
         );
+        anyhow::ensure!(
+            self.region()
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+            "mirror region must contain only letters, digits and hyphens"
+        );
         validate_url(&self.endpoint())?;
         let public = validate_url(&self.public_base)?;
         if public.host_str().is_some_and(|h| h.ends_with(".r2.dev")) {
             eprintln!("warning: r2.dev public access is rate limited and unsuitable for production; use a custom domain");
         }
         Ok(())
+    }
+    pub fn region(&self) -> &str {
+        self.region
+            .as_deref()
+            .filter(|r| !r.is_empty())
+            .unwrap_or("auto")
     }
     fn endpoint(&self) -> String {
         self.endpoint
@@ -148,7 +215,7 @@ impl R2Publisher {
             let auth = authorization(
                 &self.access,
                 &self.secret,
-                "auto",
+                self.config.region(),
                 method.as_str(),
                 url.path(),
                 &date,
@@ -296,6 +363,16 @@ impl R2Publisher {
             .to_str()
             .context("manifest filename must be UTF-8")?;
         self.upload_file(&self.config.key(tag, name)?, manifest_path, dry_run)
+    }
+    /// Read the first byte of an uploaded object from its public URL, as the
+    /// web player on another origin would. Returns the problem, if any.
+    pub fn browser_access(&self, tag: &str, name: &str) -> Result<Option<String>> {
+        browser_access(&format!(
+            "{}/{}/{}",
+            self.config.public_base.trim_end_matches('/'),
+            urlencoding::encode(tag),
+            urlencoding::encode(name)
+        ))
     }
     pub fn check_remote_manifest(
         &self,
@@ -630,5 +707,69 @@ mod tests {
             assert!(validate_url(url).is_err());
         }
         assert!(R2Config::default().key("..", "pack").is_err());
+    }
+
+    #[test]
+    fn s3_compatible_stores_sign_with_their_region() {
+        let mut config = R2Config {
+            bucket: "bucket".into(),
+            endpoint: Some("https://s3.eu-west-1.amazonaws.com".into()),
+            public_base: "https://cdn.example.com/game".into(),
+            ..Default::default()
+        };
+        assert_eq!(config.region(), "auto");
+        config.region = Some("eu-west-1".into());
+        config.validate().unwrap();
+        assert_eq!(config.region(), "eu-west-1");
+        let headers = BTreeMap::from([("host".to_string(), "s3.example".to_string())]);
+        let auth = authorization(
+            "id",
+            "secret",
+            config.region(),
+            "GET",
+            "/b/k",
+            "20260101T000000Z",
+            "hash",
+            &headers,
+        );
+        assert!(
+            auth.contains("/20260101/eu-west-1/s3/aws4_request"),
+            "{auth}"
+        );
+        config.region = Some("eu west/1".into());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn browser_access_needs_206_cors_and_exposed_content_range() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let headers = |pairs: &[(&'static str, &'static str)]| {
+            let mut map = HeaderMap::new();
+            for (name, value) in pairs {
+                map.insert(*name, HeaderValue::from_static(value));
+            }
+            map
+        };
+        let good = headers(&[
+            ("access-control-allow-origin", "*"),
+            ("access-control-expose-headers", "ETag, Content-Range"),
+        ]);
+        assert_eq!(browser_access_problem(206, &good), None);
+        assert!(browser_access_problem(200, &good)
+            .unwrap()
+            .contains("HTTP 200"));
+        let no_cors = headers(&[("access-control-expose-headers", "Content-Range")]);
+        assert!(browser_access_problem(206, &no_cors)
+            .unwrap()
+            .contains("Allow-Origin"));
+        let other_origin = headers(&[
+            ("access-control-allow-origin", "https://other.example"),
+            ("access-control-expose-headers", "Content-Range"),
+        ]);
+        assert!(browser_access_problem(206, &other_origin).is_some());
+        let hidden = headers(&[("access-control-allow-origin", "*")]);
+        assert!(browser_access_problem(206, &hidden)
+            .unwrap()
+            .contains("Expose-Headers"));
     }
 }

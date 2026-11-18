@@ -43,7 +43,19 @@
     return report({ type: "vesper-error", message: "service workers are unavailable in this browser" });
   }
   try {
-    await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    const registered = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    // Take a new service worker before starting: an old one may serve game files
+    // without the headers this page now requires, and the frame would be blocked.
+    await registered.update().catch(() => {});
+    const pending = registered.installing || registered.waiting;
+    if (pending) {
+      await new Promise((resolve) => {
+        const done = () => ["activated", "redundant"].includes(pending.state) && resolve();
+        pending.addEventListener("statechange", done);
+        setTimeout(resolve, 10000); // never block the launch on a stuck update
+        done();
+      });
+    }
     const registration = await navigator.serviceWorker.ready;
     navigator.serviceWorker.addEventListener("message", (event) => {
       const data = event.data || {};
@@ -69,12 +81,20 @@
     frame = document.createElement("iframe");
     frame.id = "game";
     frame.title = appId;
-    frame.allow = "autoplay; fullscreen; gamepad; microphone";
+    frame.allow = "autoplay; fullscreen; gamepad; microphone; cross-origin-isolated";
     frame.src = `/run/${encodeURIComponent(appId)}/${prepared.entry.split("/").map(encodeURIComponent).join("/")}`;
     frame.addEventListener("load", () => {
       status.hidden = true;
       frame.focus();
-      report({ type: "vesper-started" });
+      // Whether the game got SharedArrayBuffer and wasm threads.
+      let isolated = false;
+      try {
+        isolated = frame.contentWindow.crossOriginIsolated === true;
+      } catch {
+        // An error page in the frame (for example a blocked document) is cross-origin.
+      }
+      console.info(`vesper: ${appId} ${isolated ? "is" : "is not"} cross-origin isolated`);
+      report({ type: "vesper-started", isolated });
     });
     document.body.appendChild(frame);
   } catch (error) {

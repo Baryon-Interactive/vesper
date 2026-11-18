@@ -50,6 +50,10 @@ const types = {
 
 createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
+  // Cross-origin isolation like the deployed sites, so local games get SharedArrayBuffer.
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   res.setHeader("Access-Control-Allow-Headers", "Range");
   res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
   if (req.method === "OPTIONS") return res.writeHead(204).end();

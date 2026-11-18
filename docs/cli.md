@@ -103,12 +103,25 @@ pack directories, never as a production retention planner. It does not repack.
 ### R2 publishing options
 
 `publish` accepts optional `--r2-bucket`, `--r2-account-id`, `--r2-endpoint`,
-`--r2-prefix` and `--r2-public-base`. Non-secret defaults are read from the
+`--r2-region`, `--r2-prefix` and `--r2-public-base`. Non-secret defaults are read from the
 current directory's `vesper.toml` `[r2]` fields `bucket`, `account_id`, `endpoint`,
-`prefix` and `public_base`; CLI values override each field. Bucket and public
+`region`, `prefix` and `public_base`; CLI values override each field. Any
+S3-compatible store works with `endpoint` and `region` (default `auto`, for R2).
+For `web-wasm32` builds, `publish` then checks that a browser on another origin
+can read the uploaded manifest (`206`, CORS, exposed `Content-Range`) and warns
+otherwise; see [web builds](publishing.md#web-builds). Bucket and public
 base are required when R2 is configured; supply account ID or endpoint.
 Prefix defaults to empty. R2 requires `--owner` and `--repo` for a complete
 GitHub-backed mirror, in both `--metadata-dir` and `--index` modes.
+
+### Relay option
+
+`publish --relay <URL>` (or `relay = "<URL>"` at the top of `vesper.toml`)
+signs a developer's own GitHub relay, the `github-proxy` Worker in relay
+mode, as an extra `http` source with template `<URL>/{release}/{pack_id}`.
+It requires `--owner` and `--repo`. After the upload, `publish` checks that a
+browser on another origin can read the manifest through the relay and warns
+otherwise; see [your own relay](publishing.md#your-own-relay).
 
 Only `VESPER_R2_ACCESS_KEY_ID` and `VESPER_R2_SECRET_ACCESS_KEY` supply credentials.
 The publisher uses path-style SigV4 PUT/HEAD, region `auto`, service `s3`.

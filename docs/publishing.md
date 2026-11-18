@@ -72,6 +72,168 @@ create a repository, register routes, submit PRs or dispatch catalogue workflows
 For custom HTTPS hosting, copy the same three local metadata files to the
 registered base directory. No Pages setup is needed for Release hosting.
 
+## Web builds
+
+A `web-wasm32` build plays in the browser on the Vesper web store, with no
+install. Pack the folder a static web server would host (`index.html` at the
+top, relative paths) and publish it on its own channel:
+
+```powershell
+vesper pack --input ./build-web --output ./dist-web --app-id com.example.game --platform web-wasm32 --version 1.0.0 --release-tag v1.0.0-web
+vesper publish ./dist-web --owner example --repo game-builds --tag v1.0.0-web --metadata-dir ./metadata --channel stable-web-wasm32
+```
+
+Add `web-wasm32` to `platforms` in `store.json`. Browsers download packs from
+another origin, so every host they read must send CORS headers and answer
+byte ranges with `206`.
+
+**Host web builds on R2 or another S3-compatible store.** GitHub Releases
+still hold every build, but GitHub sends no CORS headers. Browsers can reach
+a GitHub-only build only through the catalogue's
+[GitHub proxy](../github-proxy/README.md), which every game shares and which
+is slower and quota-limited. With a mirror, the player downloads straight
+from the bucket and uses the proxy only as a fallback. Desktop clients use
+both sources as before.
+
+### One-time setup
+
+Do this once per game (or once for all your games, with one prefix each).
+After that, every `vesper publish` uploads to GitHub and the bucket, signs
+both sources and checks browser access, with nothing else to configure.
+
+1. Create an R2 bucket and connect a custom domain to it, for example
+   `cdn.example.com` (`r2.dev` addresses are rate limited). R2 needs a payment
+   method; see [pricing](#optional-r2-mirror).
+2. Add this CORS policy to the bucket (R2: Settings, CORS Policy):
+
+   ```json
+   [{"AllowedOrigins": ["*"], "AllowedMethods": ["GET", "HEAD"], "AllowedHeaders": ["Range"],
+     "ExposeHeaders": ["Content-Range", "Content-Length", "Accept-Ranges", "ETag"], "MaxAgeSeconds": 86400}]
+   ```
+
+   Allowing every origin is safe: the objects are public anyway, and players
+   verify every byte against the signed metadata.
+3. Let Cloudflare cache the custom domain. It does not cache `.vpack` files by
+   default, so every request would read the bucket. Add a Cache Rule (Caching,
+   Cache Rules) with the expression `(http.host eq "cdn.example.com")`,
+   Eligible for cache, Edge TTL "Ignore cache-control header and use this
+   TTL" of one month, and a status code TTL of No store for codes 400 and
+   above. Release assets never change under the same name, so a long TTL is
+   safe.
+4. Create an API token for that bucket with Object Read & Write permission.
+5. Save its S3 credentials as `VESPER_R2_ACCESS_KEY_ID` and
+   `VESPER_R2_SECRET_ACCESS_KEY` (environment variables or CI secrets), and the
+   non-secret settings in `vesper.toml`:
+
+   ```toml
+   [r2]
+   bucket = "game-builds"
+   account_id = "your-account-id"
+   prefix = "game"
+   public_base = "https://cdn.example.com/game"
+   ```
+
+When a web build is published, `vesper publish` reads its manifest from
+`public_base` as a browser on another origin would. It prints
+`r2 browser access ok`, or a warning naming what is missing (a `206`
+response, `Access-Control-Allow-Origin`, or `Content-Range` in
+`Access-Control-Expose-Headers`).
+
+Other S3-compatible stores work the same way. Set `endpoint` to the store's S3
+endpoint and `region` to its signing region, for example
+`endpoint = "https://s3.eu-west-1.amazonaws.com"` and `region = "eu-west-1"`
+for AWS S3; R2 uses the default region `auto`. Requests use path-style
+addresses (`<endpoint>/<bucket>/<key>`), which the store must accept.
+`public_base` must be a public HTTPS address of the same objects, and the
+bucket needs public read access and the CORS rule above. The credential
+variables keep their `VESPER_R2_` names for every store.
+
+Store media is read by browsers too. Put the cover and screenshots where
+cross-origin reads work: the bucket, or files committed to a public
+repository and linked through `raw.githubusercontent.com`. GitHub Release
+asset URLs do not work in the browser.
+
+### How browsers reach a build
+
+The player tries the signed sources in this order and uses the first that
+answers:
+
+| Source | Run by | Limits |
+|---|---|---|
+| R2 or S3 mirror | You | Storage and request prices of the store; R2 has free egress (see [pricing](#optional-r2-mirror)). No GitHub and no Worker in the path, and no shared quota. |
+| Your own relay | You | The relay's Cloudflare Workers plan (free: 100,000 requests a day per account). Every byte crosses the Worker and comes from GitHub at GitHub's speed. |
+| The catalogue's GitHub proxy | The catalogue operator | Shared by every game in the catalogue, on the operator's Workers plan. A fallback, not a host. |
+
+The player merges the ranges it needs, so a cold start sends few requests:
+an 11 MB Unity build took 5. Returning players load most files from their
+browser cache. On the shared proxy's free plan that is roughly 15,000 cold
+starts a day for the whole catalogue, so games with many players should have
+a mirror. GitHub may also slow down heavy download traffic from one source,
+which all proxy and relay traffic is.
+
+Measured on one connection with an 11 MB Unity web build: through the
+proxy the browser downloaded it in 14 seconds; from R2 with the Cache Rule
+from the setup above, in 3 to 5 seconds, with the first byte after 0.6
+seconds instead of 1.6 to 3.3. Without that rule R2 was no faster than the
+proxy, and a 103 MB desktop install took 55 to 84 seconds instead of 11.
+
+### Your own relay
+
+If you cannot use a bucket, run the GitHub proxy in relay mode in your own
+Cloudflare account. It serves one repository, so its quota is yours alone:
+
+```bash
+git clone https://github.com/Baryon-Interactive/vesper && cd vesper
+npx wrangler deploy --config github-proxy/wrangler.toml --name my-game-relay --var REPO:example/game-builds
+```
+
+Wrangler prints the relay address, for example
+`https://my-game-relay.example.workers.dev` (a custom domain works too). Add it
+to `vesper.toml` or pass `--relay` to `vesper publish`:
+
+```toml
+relay = "https://my-game-relay.example.workers.dev"
+```
+
+Every `vesper publish` with `--owner` and `--repo` then signs the relay as an
+extra `http` source and checks that a browser can read the build through it
+(`relay browser access ok`). The relay needs no trust: players verify every
+byte against your signed metadata.
+
+### Threads and SharedArrayBuffer
+
+`SharedArrayBuffer`, and with it WebAssembly threads (Unity multithreading,
+Godot thread support, Emscripten `-pthread`), is only available to pages that
+are *cross-origin isolated*. This is a browser rule. A page is isolated only
+when it and every page that embeds it are served with:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: credentialless
+```
+
+The Vesper store and play site send both headers on every page, from the
+store's play page down to the game, and the service worker adds the
+embedder policy to every game file. In the game, `crossOriginIsolated` is
+`true` and threaded builds run. The play bar's tooltip shows whether the
+current browser isolated the game, and the play site logs it to the console.
+
+- **Browser support.** Chromium-based browsers and Firefox support
+  `credentialless`. Browsers that do not (Safari, at the time of writing)
+  ignore it and run games without isolation, so `crossOriginIsolated` is
+  `false` and `SharedArrayBuffer` is missing. Ship a single-threaded build,
+  or check `crossOriginIsolated` and fall back.
+- **What changes for game code.** Cross-origin requests that do not use CORS
+  (`<img>`, `<script>` or `<link>` without `crossorigin`) still load, but
+  without cookies. A cross-origin frame inside the game loads only if it
+  sends an embedder policy of its own. Popups opened with `window.open` get no
+  `window.opener` link back to the game, so sign-in flows must redirect
+  instead of relying on a popup.
+- **Hosting the sites yourself.** `npm run build` in `web/` writes these
+  headers into `_headers` for both sites. Other hosts must send them too, and
+  the launch page also needs `Cross-Origin-Resource-Policy: cross-origin` so
+  the isolated store page may embed it.
+
 ## Optional R2 mirror
 
 Clients choose between GitHub and enabled mirrors using probes followed by
@@ -83,7 +245,8 @@ observations. Both measurements must be at most 30 seconds old. See
 [download source selection](architecture.md#download-source-selection).
 
 GitHub Releases is the default, with zero hosting configuration. An optional
-Cloudflare R2 mirror suits large games or high download volumes. Standard R2
+Cloudflare R2 mirror suits large games or high download volumes, and web
+builds should always have one (see [Web builds](#web-builds)). Standard R2
 storage includes 10 GB-month free each month, then costs $0.015/GB-month. Class A
 operations include 1 million free requests per month; Class B includes 10 million.
 Egress traffic is free. Enabling R2 requires a payment method. Public `r2.dev`

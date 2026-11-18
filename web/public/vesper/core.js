@@ -178,10 +178,29 @@ self.VesperCore = (() => {
 
   // --- builds ---
 
-  function sourceUrls(apiBase, targets) {
-    return [...targets.sources]
-      .sort((a, b) => a.priority - b.priority)
-      .map((s) => ({ id: s.id, template: /^https?:\/\//.test(s.url_template) ? s.url_template : apiBase + s.url_template }));
+  const GITHUB_TEMPLATE = /^https:\/\/github\.com\/[^/]+\/[^/]+\/releases\/download\/\{release\}\/\{pack_id\}$/;
+
+  /**
+   * Download sources in the order the browser tries them. Sources that serve
+   * CORS themselves (R2 and other S3-compatible stores, Hugging Face, HTTP)
+   * come first, by priority. GitHub Releases send no CORS headers, so they go
+   * last, through the GitHub proxy (`githubProxy` in the site configuration),
+   * and are skipped when no proxy is configured.
+   */
+  function sourceUrls(apiBase, targets, appId, githubProxy) {
+    const direct = [];
+    const proxied = [];
+    for (const s of [...targets.sources].sort((a, b) => a.priority - b.priority)) {
+      if (s.kind === "github") {
+        if (githubProxy && GITHUB_TEMPLATE.test(s.url_template)) {
+          const base = githubProxy.replace(/\/+$/, "");
+          proxied.push({ id: s.id, template: `${base}/${encodeURIComponent(appId)}/{release}/{pack_id}` });
+        }
+        continue;
+      }
+      direct.push({ id: s.id, template: /^https?:\/\//.test(s.url_template) ? s.url_template : apiBase + s.url_template });
+    }
+    return [...direct, ...proxied];
   }
   const fill = (template, release, name) =>
     template.replace("{release}", encodeURIComponent(release)).replace("{pack_id}", encodeURIComponent(name));
@@ -189,13 +208,13 @@ self.VesperCore = (() => {
   /** Verify an application and open the manifest of its web build. */
   async function openBuild(appId, requested = "stable") {
     const w = await wasm();
-    const { apiBase } = await config();
+    const { apiBase, githubProxy } = await config();
     const result = await verifyApp(appId);
     const channelName = await webChannel(result, requested);
     if (!channelName) throw new Error(`${appId} has no web build on the ${requested} channel`);
     const channel = result.targets.channels[channelName];
-    const sources = sourceUrls(apiBase, result.targets);
-    let lastError = new Error("no download source");
+    const sources = sourceUrls(apiBase, result.targets, appId, githubProxy);
+    let lastError = new Error("no download source the browser can read (GitHub Releases need the GitHub proxy)");
     for (const source of sources) {
       try {
         const bytes = await fetchBytes(fill(source.template, channel.manifest.release_tag, channel.manifest.asset_name));
@@ -350,6 +369,7 @@ self.VesperCore = (() => {
     appDetail,
     media,
     openBuild,
+    sourceUrls,
     readFile,
     brotli,
     stats,

@@ -8,7 +8,8 @@
 // Origins come from the environment; without them the build targets the local
 // demo ports. Headers are written in Cloudflare Pages `_headers` format.
 //   VESPER_STORE_ORIGIN=https://vesper.example VESPER_PLAY_ORIGIN=https://play.vesper.example \
-//   VESPER_API_BASE=https://baryon-interactive.github.io/vesper-index/ npm run build
+//   VESPER_API_BASE=https://baryon-interactive.github.io/vesper-index/ \
+//   VESPER_GITHUB_PROXY=https://gh.vesper.example npm run build
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,12 +32,21 @@ const playOrigin = origin("VESPER_PLAY_ORIGIN", "http://127.0.0.1:3240");
 if (storeOrigin === playOrigin) throw new Error("the store and play sites must be different origins");
 const defaults = JSON.parse(readFileSync(join(web, "public", "vesper-config.json"), "utf8"));
 const apiBase = process.env.VESPER_API_BASE || defaults.apiBase;
+// Optional: origin of the GitHub Release proxy (github-proxy/) for builds without a CORS mirror.
+const githubProxy = process.env.VESPER_GITHUB_PROXY ? origin("VESPER_GITHUB_PROXY", "") : undefined;
+if (!githubProxy) console.warn("VESPER_GITHUB_PROXY is not set; builds hosted only on GitHub Releases will not play");
 for (const file of ["vesper/pkg/vesper_web_bg.wasm", "vesper/root.json"]) {
   if (!existsSync(join(web, "public", file))) throw new Error(`public/${file} is missing; run npm run wasm first`);
 }
 const json = (value) => JSON.stringify(value, null, 2) + "\n";
 const headers = (rules) => Object.entries(rules).map(([path, list]) => `${path}\n${list.map((h) => `  ${h}`).join("\n")}\n`).join("");
 const common = ["X-Content-Type-Options: nosniff", "Referrer-Policy: strict-origin-when-cross-origin"];
+// Cross-origin isolation, so games get SharedArrayBuffer and WebAssembly threads.
+// Every document from the store page down to the game must send these; the
+// service worker adds COEP to game files. `credentialless` (not `require-corp`)
+// still loads cross-origin images, fonts and scripts, without cookies.
+// Browsers without `credentialless` ignore it and run games without isolation.
+const isolation = ["Cross-Origin-Opener-Policy: same-origin", "Cross-Origin-Embedder-Policy: credentialless"];
 
 // Store: drop local-only files, write its config and a strict CSP.
 for (const file of ["vesper-config.dev.json", "vesper/dev-root.json"]) rmSync(join(store, file), { force: true });
@@ -49,6 +59,7 @@ writeFileSync(
   headers({
     "/*": [
       `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data:; connect-src 'self' ${new URL(apiBase).origin} https:; worker-src 'self'; frame-src ${playOrigin}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`,
+      ...isolation,
       ...common,
     ],
   }),
@@ -62,7 +73,7 @@ copyFileSync(join(web, "public", "favicon.svg"), join(play, "favicon.svg"));
 copyFileSync(join(web, "public", "vesper", "core.js"), join(play, "vesper", "core.js"));
 copyFileSync(join(web, "public", "vesper", "root.json"), join(play, "vesper", "root.json"));
 cpSync(join(web, "public", "vesper", "pkg"), join(play, "vesper", "pkg"), { recursive: true });
-writeFileSync(join(play, "vesper-config.json"), json({ apiBase, trustedRoot: "/vesper/root.json", storeOrigins: [storeOrigin] }));
+writeFileSync(join(play, "vesper-config.json"), json({ apiBase, trustedRoot: "/vesper/root.json", storeOrigins: [storeOrigin], githubProxy }));
 writeFileSync(join(play, "index.html"), `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${storeOrigin}/"><a href="${storeOrigin}/">Vesper</a>\n`);
 // Hosts that map "/" to index.html use the page above; others follow this rule.
 writeFileSync(join(play, "_redirects"), `/ ${storeOrigin}/ 302\n`);
@@ -71,7 +82,8 @@ writeFileSync(
   headers({
     // Only the store may embed the launch page. Games inherit no permissions
     // beyond what the store's iframe delegates.
-    "/*": [`Content-Security-Policy: frame-ancestors ${storeOrigin}`, ...common],
+    // CORP lets the isolated store page embed the launch page.
+    "/*": [`Content-Security-Policy: frame-ancestors ${storeOrigin}`, ...isolation, "Cross-Origin-Resource-Policy: cross-origin", ...common],
     "/sw.js": ["Cache-Control: no-cache"],
   }),
 );

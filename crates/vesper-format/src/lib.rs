@@ -461,10 +461,8 @@ impl PackFrame {
         }
         let raw = match self.codec {
             Codec::Raw => stored,
-            Codec::Zstd => {
-                zstd_decompress_limited(&stored, u64::from(self.raw_size))
-                    .context("decompress chunk")?
-            }
+            Codec::Zstd => zstd_decompress_limited(&stored, u64::from(self.raw_size))
+                .context("decompress chunk")?,
         };
         if raw.len() as u32 != self.raw_size {
             anyhow::bail!(
@@ -1064,7 +1062,9 @@ fn zstd_compress(_bytes: &[u8], _level: i32) -> Result<Vec<u8>> {
 fn zstd_decompress_limited(bytes: &[u8], limit: u64) -> io::Result<Vec<u8>> {
     let decoder = zstd::stream::read::Decoder::new(bytes)?;
     let mut raw = Vec::new();
-    decoder.take(limit.saturating_add(1)).read_to_end(&mut raw)?;
+    decoder
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut raw)?;
     Ok(raw)
 }
 
@@ -1073,7 +1073,9 @@ fn zstd_decompress_limited(bytes: &[u8], limit: u64) -> io::Result<Vec<u8>> {
 fn zstd_decompress_limited(bytes: &[u8], limit: u64) -> io::Result<Vec<u8>> {
     let decoder = ruzstd::decoding::StreamingDecoder::new(bytes).map_err(io::Error::other)?;
     let mut raw = Vec::new();
-    decoder.take(limit.saturating_add(1)).read_to_end(&mut raw)?;
+    decoder
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut raw)?;
     Ok(raw)
 }
 

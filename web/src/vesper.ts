@@ -79,7 +79,7 @@ export function playUrl(playOrigin: string, appId: string, channel = "stable"): 
 export type PlayEvent =
   | { type: "progress"; progress: Progress }
   | { type: "ready"; version: string; channel: string }
-  | { type: "started" }
+  | { type: "started"; isolated: boolean }
   | { type: "error"; message: string };
 
 /**
@@ -100,7 +100,7 @@ export function playEvent(data: unknown): PlayEvent | null {
     case "vesper-ready":
       return { type: "ready", version: text(d.version), channel: text(d.channel) };
     case "vesper-started":
-      return { type: "started" };
+      return { type: "started", isolated: d.isolated === true };
     case "vesper-error":
       return { type: "error", message: text(d.message) };
     default:

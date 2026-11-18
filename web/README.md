@@ -69,25 +69,21 @@ the entries and fetched verified bytes.
 
 ## Publishing a web build
 
-```bash
-vesper pack --input ./build-web --output ./dist-web --app-id com.example.game --platform web-wasm32 --version 1.0.0 --release-tag v1.0.0-web
-vesper publish ./dist-web --owner example --repo game-builds --tag v1.0.0-web --metadata-dir ./metadata --channel stable-web-wasm32
-```
+See [web builds](../docs/publishing.md#web-builds) in the publishing guide:
+pack the folder a static web server would host, publish it on
+`<channel>-web-wasm32`, and mirror it to R2 or another S3-compatible store
+with CORS. Engine output without its own compression packs best, because
+Vesper already compresses each chunk and reuses unchanged chunks across
+updates; Brotli or gzip output still works but changes as a whole on every
+build.
 
-Add `web-wasm32` to `platforms` in `store.json`. The build folder is what a
-static web server would host: `index.html` at the top level and relative
-paths for everything else. Engine output without its own compression packs
-best, because Vesper already compresses each chunk, and unchanged chunks are
-reused across updates. Brotli or gzip output still works but changes as a
-whole on every build.
-
-Browsers download packs directly, so each source must allow cross-origin
-`GET` with a `Range` header and expose `Content-Range`. Cloudflare R2 and
-Hugging Face can do this. GitHub Release downloads send no CORS headers, so a
-GitHub-only game needs a CORS proxy source before it can play in the browser.
-Some static hosts ignore `Range` and always send the whole file with `200`
-(Cloudflare Workers static assets do); put a small Worker in front that
-answers single ranges with `206`, or use R2.
+The player tries sources in this order: those that send CORS themselves (R2
+and other S3-compatible stores, Hugging Face, HTTP), by priority, then GitHub
+Releases through the [GitHub proxy](../github-proxy/README.md) named by
+`githubProxy` in the play site's configuration. Without a proxy, GitHub
+sources are skipped. Some static hosts ignore `Range` and always send the
+whole file with `200` (Cloudflare Workers static assets do); they need a
+small Worker in front that answers single ranges with `206`.
 
 ## Development
 
@@ -127,14 +123,17 @@ overlays several `--root` folders.
 ## Deployment
 
 ```bash
-VESPER_STORE_ORIGIN=https://store.example VESPER_PLAY_ORIGIN=https://play.example VESPER_API_BASE=https://baryon-interactive.github.io/vesper-index/ npm --prefix web run build
+VESPER_STORE_ORIGIN=https://store.example VESPER_PLAY_ORIGIN=https://play.example VESPER_API_BASE=https://baryon-interactive.github.io/vesper-index/ VESPER_GITHUB_PROXY=https://gh.example npm --prefix web run build
 ```
 
 This writes two static sites, `web/dist/store` and `web/dist/play`. Each
 gets its own `vesper-config.json` and a Cloudflare Pages `_headers` file. The
 store's Content Security Policy allows only its own scripts and WebAssembly,
 the catalogue and https media, and frames from the play origin. The play
-site allows framing only by the store. Deploy them to two different origins,
+site allows framing only by the store. Both sites send
+`Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`, so games are
+cross-origin isolated and get `SharedArrayBuffer`; see
+[threads](../docs/publishing.md#threads-and-sharedarraybuffer). Deploy them to two different origins,
 each at the root of its host name, because the service worker and runtime use
 absolute paths. The store is a single-page app: unknown paths must serve
 `index.html`, which Cloudflare Pages does by default when there is no
@@ -147,8 +146,8 @@ applies the `/*` rules from `_headers`.
 
 - Paid builds: encrypted manifests are refused in the browser, and DepotKey
   delivery to the browser is not designed yet.
-- Multi-threaded engines need `SharedArrayBuffer`, which needs COOP/COEP
-  headers on the play site, and a store frame that allows cross-origin isolation.
+- Cross-origin isolation uses `credentialless`, which Safari does not
+  support yet: threaded builds need a single-threaded fallback there.
 - Games share one play origin, so they share its storage (saves, Cache
   Storage). Verified chunks cannot be poisoned, but one game can read or clear
   another's saves, or clear the rollback records. A per-game origin would
@@ -156,6 +155,6 @@ applies the `/*` rules from `_headers`.
 - No synchronous file access for engines that read with `fread`
   (Emscripten/WASI bridging). Engines must load files with `fetch` or XHR.
 - The chunk cache uses Cache Storage, with no quota management or eviction.
-- No CORS proxy for GitHub Releases, no pre-rendered store pages for search
-  engines, no cloud saves, and no deployment workflow yet. The public store at
+- No pre-rendered store pages for search engines, no cloud saves, and no
+  deployment workflow yet. The public store at
   <https://vesperplay.xyz> is deployed by hand.

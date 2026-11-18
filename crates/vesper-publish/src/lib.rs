@@ -363,18 +363,25 @@ impl GitHubPublisher {
         pack_id: &str,
         expected_size: u64,
     ) -> Result<()> {
-        // Public pack preflight must work without forwarding publisher credentials.
+        // Release metadata is read with the publisher's token, so repeated publishes
+        // do not exhaust the anonymous API limit (60 requests an hour). The download
+        // check below stays anonymous: players must be able to fetch the pack.
         let url = format!(
             "{}/repos/{owner}/{repo}/releases/tags/{}",
             self.api_base,
             urlencoding::encode(release_tag)
         );
-        let response = self.request(|| Ok(self.client.get(&url).send()?))?;
+        let response =
+            self.request(|| Ok(self.request_builder(self.client.get(&url)).send()?))?;
         if response.status().as_u16() == 404 {
             anyhow::bail!("pack {pack_id} release {release_tag} is missing");
         }
         let release: Release = response.error_for_status()?.json()?;
-        let response = self.request(|| Ok(self.client.get(&release.assets_url).send()?))?;
+        let response = self.request(|| {
+            Ok(self
+                .request_builder(self.client.get(&release.assets_url))
+                .send()?)
+        })?;
         let assets: Vec<ReleaseAsset> = response.error_for_status()?.json()?;
         let asset = assets
             .iter()
@@ -634,7 +641,23 @@ mod tests {
                         .split_whitespace()
                         .next()
                         .unwrap_or("");
-                    if method == "GET" && path == "/repos/o/r/releases/tags/v0" {
+                    let authorized = text
+                        .lines()
+                        .any(|line| line.to_ascii_lowercase().starts_with("authorization:"));
+                    if method == "GET"
+                        && (path.starts_with("/repos/") || path == "/assets")
+                        && !authorized
+                    {
+                        // API reads must carry the token (the anonymous limit is 60 an hour).
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 403 Forbidden
+Content-Length: 0
+Connection: close
+
+"
+                        );
+                    } else if method == "GET" && path == "/repos/o/r/releases/tags/v0" {
                         let body = format!(
                             r#"{{"id":0,"tag_name":"v0","upload_url":"{}/upload{{?name,label}}","assets_url":"{}/assets"}}"#,
                             base_thread, base_thread

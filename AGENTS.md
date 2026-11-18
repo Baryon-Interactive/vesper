@@ -18,6 +18,7 @@ agents. Read it instead of exploring the tree, and open only the files your task
 | `crates/vesper-web` | WebAssembly build of the verification and manifest code for the web store and player. |
 | `launcher/` | Tauri v2 desktop client: `src/` (TypeScript UI), `src-tauri/` (own Cargo workspace and lockfile), `dev/` (demo catalogue, tour scripts). See [launcher/README.md](launcher/README.md). |
 | `web/` | Web store (`src/`) and play site (`play/`: service worker, launch page) for `web-wasm32` builds. See [web/README.md](web/README.md). |
+| `github-proxy/` | Worker that streams GitHub Release assets with CORS for the web player (`node --test github-proxy/test/`). |
 | `index-template/` | Template repository for a catalogue: workflows, schemas, `test/` (Node tests). |
 | `gateway/` | Key gateway Worker for paid builds. |
 | `scripts/` | Release build, docs check, license inventory, e2e and smoke scripts, release notes, workflow test. |
