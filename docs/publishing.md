@@ -31,12 +31,65 @@ keys out of the index. CI uses secret `VESPER_DEV_KEY` and `VESPER_APP_ID`.
 
 ## Prepare metadata and the first build
 
-Create `./metadata/store.json` following the [store schema](../index-template/schemas/store.schema.json)
-and `./metadata/description.md` as UTF-8 Markdown. Media records contain HTTPS
-URLs, BLAKE3 hashes and dimensions; host actual media in your own repository or
-release. The launcher displays the exact image bytes verified by the client.
+The store listing lives in `./metadata`: `store.json`, `description.md` and,
+optionally, `changelog.md`. Start it with the CLI, then edit the files:
+
+```powershell
+vesper store init --title "My Game" --developer "My Studio" --homepage https://example.com --platform windows-x64
+vesper store add-media ./art/header.png --as cover --url https://example.com/media/header.png
+vesper store add-media ./art/shot-1.png --as screenshot --url https://example.com/media/shot-1.png
+vesper store check
+```
+
+`add-media` records an image's BLAKE3 hash and size; host the image itself at
+`--url` (your repository, a release or a CDN). Clients show only image bytes
+that match the signed hash. `vesper store check` applies the same rules as the
+catalogue, which rejects listings that break them. `publish` warns about the
+same problems.
+
+### What a listing can hold
+
+`store.json` follows the [store schema](../index-template/schemas/store.schema.json).
+Required: `title` and `summary` (maps from language tag to text), `tags`,
+`screenshots`, `cover`, `requirements`, `paid`, `price_display`, `developer`,
+`homepage` and `platforms`. Optional:
+
+| Field | What the store shows |
+|---|---|
+| `release` | `{status, date}`: `coming-soon`, `early-access` or `released`, with an optional `YYYY-MM-DD` date. |
+| `trailers` | Up to 10, shown before screenshots: `{kind: "youtube", id}` (loads from youtube-nocookie.com only when the player clicks play) or `{kind: "video", url, poster}` for an `.mp4` or `.webm` file you host, with a poster image record. Optional `title` map. |
+| `capsule`, `logo`, `background` | Image records: a portrait shelf image, a transparent title logo shown instead of the title text, and the page backdrop. |
+| `features` | `single-player`, `online-co-op`, `local-co-op`, `online-pvp`, `local-pvp`, `controller`, `keyboard-mouse`, `touch`, `cloud-saves`, `achievements`, `mod-support`, `level-editor`. |
+| `max_players` | 1 to 1000. |
+| `languages` | Language tag to `{interface, audio, subtitles}`, each true or false. |
+| `system_requirements` | Platform to `{minimum, recommended}`, each with `os`, `cpu`, `gpu`, `memory`, `storage`, `network`, `notes`. |
+| `links` | `discord`, `x`, `bluesky`, `youtube`, `twitch`, `reddit`, `steam`, `itch`, `github`, `wiki`, `press-kit`, `support` to https URLs. |
+| `publishers` | 1 to 10 names. |
+| `content_descriptors` | `violence`, `blood`, `gore`, `strong-language`, `sexual-content`, `nudity`, `drugs`, `alcohol`, `gambling`, `horror`. |
+| `accessibility` | `subtitles`, `colorblind-modes`, `remappable-controls`, `adjustable-text-size`, `screen-reader`, `one-handed`, `difficulty-options`, `reduced-motion`, `no-flashing-lights`. |
+| `default_language`, `updated` | The listing's main language tag and the date it last changed. |
+
+Unknown fields are rejected, so a typo fails `vesper store check` instead of
+silently disappearing. `requirements` (free-form name to text) stays for older
+listings; prefer `system_requirements`.
+
+### Description and changelog
+
+`description.md` and `changelog.md` are UTF-8 Markdown, up to 64 KiB each. The
+store shows the changelog under "Updates", newest entry first as you write it.
+Per-language versions are `description.<lang>.md` and `changelog.<lang>.md`
+(for example `changelog.ja.md`); players see the one for their language and
+fall back to the plain file. Every one of these files is signed: publishing
+binds each file's length and SHA-256 into `targets.json`, up to 32 store files.
+
+Signing more than `store.json` and `description.md` needs a catalogue that runs
+Vesper 0.8 or later; older catalogues reject the listing. Older clients ignore
+the new fields and documents.
+
 Preserve the metadata directory, including its signed targets version history,
 between publications. Keep it in your own game repository or durable CI storage.
+
+### First build
 
 ```powershell
 vesper check ./build --json
@@ -57,10 +110,10 @@ executable, are installed as executable.
 
 The publisher uploads the build manifest and packs to the immutable build
 release, checks remote assets, increments the local targets version, binds the
-exact store/description lengths and SHA-256 hashes, and signs with the developer
+exact lengths and SHA-256 hashes of every store file, and signs with the developer
 key. It creates the `vesper-metadata` Release if absent, without marking it as
-the repository's latest release, and replaces its three metadata assets:
-`targets.json`, `store.json`, `description.md`. Targets upload last; a reader
+the repository's latest release, and uploads `targets.json` and every store file
+it signs, removing store files it no longer signs. Targets upload last; a reader
 seeing mixed generations rejects the store binding and retains valid data. The
 printed `metadata_url` is the location clients and aggregation read. `--metadata-dir` defaults to `./metadata`; `--metadata-tag` overrides the
 metadata Release tag and must match the registered route. Build and metadata
@@ -69,8 +122,8 @@ tags must differ. `--dry-run` performs no upload or metadata write.
 Use `GITHUB_TOKEN` or authenticated `gh` with permission to upload to your own
 repository. Assets must be anonymously readable by clients. The CLI does not
 create a repository, register routes, submit PRs or dispatch catalogue workflows.
-For custom HTTPS hosting, copy the same three local metadata files to the
-registered base directory. No Pages setup is needed for Release hosting.
+For custom HTTPS hosting, copy `targets.json` and every store file it signs to
+the registered base directory. No Pages setup is needed for Release hosting.
 
 ## Web builds
 
@@ -212,9 +265,10 @@ Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: credentialless
 ```
 
-The Vesper store and play site send both headers on every page, from the
-store's play page down to the game, and the service worker adds the
-embedder policy to every game file. In the game, `crossOriginIsolated` is
+The Vesper store sends both headers on its play pages (`/play/*`), the play
+site on every page, and the service worker adds the embedder policy to every
+game file. Other store pages are not isolated, so they can embed YouTube
+trailers; links into and out of a play page load a new page. In the game, `crossOriginIsolated` is
 `true` and threaded builds run. The play bar's tooltip shows whether the
 current browser isolated the game, and the play site logs it to the console.
 
@@ -232,7 +286,7 @@ current browser isolated the game, and the play site logs it to the console.
 - **Hosting the sites yourself.** `npm run build` in `web/` writes these
   headers into `_headers` for both sites. Other hosts must send them too, and
   the launch page also needs `Cross-Origin-Resource-Policy: cross-origin` so
-  the isolated store page may embed it.
+  the isolated store play page may embed it.
 
 ## Optional R2 mirror
 

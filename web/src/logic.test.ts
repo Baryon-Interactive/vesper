@@ -1,5 +1,19 @@
 import { expect, test } from "vitest";
-import { desktopPlatforms, formatBytes, localized, matches, parseRoute, playable, routePath, type AppSummary } from "./logic";
+import {
+  changelog,
+  desktopPlatforms,
+  formatBytes,
+  gallery,
+  label,
+  localized,
+  matches,
+  parseRoute,
+  playable,
+  releaseLine,
+  routePath,
+  youtubeEmbed,
+  type AppSummary,
+} from "./logic";
 
 const channel = (platform: string, encrypted = false) => ({ version: 1, platform, encrypted, manifest: { release_tag: "r", size: 1 } });
 
@@ -44,4 +58,20 @@ test("play frame messages are reduced to plain values", async () => {
   expect(playEvent({ type: "other" })).toBeNull();
   expect(playEvent("vesper-started")).toBeNull();
   expect(playUrl("https://play.example", "a b")).toBe("https://play.example/launch.html?app=a+b&channel=stable");
+});
+
+test("listing helpers: release line, gallery order, labels, changelog language", () => {
+  expect(releaseLine({ status: "early-access" }, "en-US")).toBe("Early access");
+  expect(releaseLine({ status: "coming-soon", date: "2027-03-01" }, "en-US")).toBe("Coming soon · Mar 1, 2027");
+  expect(releaseLine({ status: "released" }, "en-US")).toBe("");
+  const shot = { url: "https://x/1.png", blake3: "a".repeat(64) };
+  const items = gallery({ screenshots: [shot], trailers: [{ kind: "youtube", id: "dQw4w9WgXcQ" }] });
+  expect(items.map((i) => i.kind)).toEqual(["trailer", "image"]);
+  expect(youtubeEmbed("dQw4w9WgXcQ")).toBe("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1&rel=0");
+  expect(label("online-co-op")).toBe("Online co-op");
+  expect(label("unknown-slug")).toBe("unknown-slug");
+  const docs = { "changelog.md": "en", "changelog.ja.md": "ja" };
+  expect(changelog(docs, ["ja", "en"])).toBe("ja");
+  expect(changelog(docs, ["de"])).toBe("en");
+  expect(changelog(undefined, ["en"])).toBe("");
 });

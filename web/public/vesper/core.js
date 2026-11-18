@@ -163,9 +163,32 @@ self.VesperCore = (() => {
     return { app_id: result.app_id, store: result.store, targets_version: result.targets.version, channels: result.targets.channels };
   }
 
+  /**
+   * Signed Markdown documents beyond description.md (changelog.md and the
+   * per-language variants), each checked against its signed SHA-256.
+   */
+  async function documents(result) {
+    const w = await wasm();
+    const { apiBase } = await config();
+    const dir = `${apiBase}apps/${encodeURIComponent(result.app_id)}/`;
+    const names = Object.keys(result.targets.metadata || {}).filter((n) => n.endsWith(".md") && n !== "description.md");
+    const payload = JSON.stringify(result.targets);
+    const texts = await Promise.all(
+      names.map(async (name) => {
+        try {
+          return w.verifyDocument(payload, name, await fetchBytes(dir + encodeURIComponent(name)));
+        } catch {
+          return null; // A missing or altered document is left out; the rest of the listing stays.
+        }
+      }),
+    );
+    return Object.fromEntries(names.map((n, i) => [n, texts[i]]).filter(([, text]) => text !== null));
+  }
+
   async function appDetail(appId) {
     const result = await verifyApp(appId);
-    return { ...summarize(result), description: result.description, web_channel: await webChannel(result) };
+    const [web_channel, docs] = await Promise.all([webChannel(result), documents(result)]);
+    return { ...summarize(result), description: result.description, documents: docs, web_channel };
   }
 
   /** Download store media and check its signed BLAKE3 before display. */

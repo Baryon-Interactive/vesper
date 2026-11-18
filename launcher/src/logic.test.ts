@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { cardMedia, desktopInstallable, displayError, formatBytes, formatEta, installedActionState, mediaIsSafe, mergeTaskSnapshot, progressPercent, updateMessage } from "./logic";
+import { describe, expect, it, test } from "vitest";
+import { cardMedia, desktopInstallable, displayError, formatBytes, formatEta, installedActionState, listingDetail, mediaIsSafe, mergeTaskSnapshot, progressPercent, updateMessage } from "./logic";
 
 describe("launcher display logic", () => {
   it("formats binary download sizes and eta", () => {
@@ -46,4 +46,18 @@ describe("desktopInstallable", () => {
     expect(desktopInstallable({})).toBe(true);
     expect(desktopInstallable({ platforms: [] })).toBe(true);
   });
+});
+
+test("listing detail reads the richer store fields and the signed changelog", () => {
+  const store = { release: { status: "early-access", date: "2026-11-01" }, publishers: ["Baryon Interactive"], features: ["single-player", "online-co-op"], max_players: 4, languages: { en: {}, ja: {} } };
+  const detail = listingDetail(store, { "changelog.md": "## 1.0\n" });
+  expect(detail.release).toBe("Early access · 2026-11-01");
+  expect(detail.facts).toEqual([
+    ["Planned release", "2026-11-01"],
+    ["Publisher", "Baryon Interactive"],
+    ["Features", "Up to 4 players, Single-player, Online co-op"],
+    ["Languages", "English, Japanese"],
+  ]);
+  expect(detail.changelog).toBe("## 1.0\n");
+  expect(listingDetail({}, undefined)).toEqual({ release: "", facts: [], changelog: "" });
 });

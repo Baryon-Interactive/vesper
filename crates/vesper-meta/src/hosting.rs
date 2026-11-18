@@ -3,11 +3,19 @@ use crate::{AppRoute, AppTargetsSigned, Signed};
 use anyhow::{Context, Result};
 #[cfg(not(target_arch = "wasm32"))]
 use reqwest::{blocking::Client, redirect::Policy};
+use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::{fs, io::Read, path::Path, time::Duration};
 use url::Url;
 
+/// Files every developer metadata directory serves; more store files
+/// (changelogs, per-language descriptions) are listed in the signed targets.
 pub const FILES: [&str; 3] = ["targets.json", "store.json", "description.md"];
+
+/// Whether `name` may be fetched from developer metadata hosting.
+pub fn is_metadata_file(name: &str) -> bool {
+    name == "targets.json" || crate::store::is_store_file_name(name)
+}
 pub const MAX_FILE_SIZE: u64 = 1024 * 1024;
 
 pub fn validate_app_id(id: &str) -> Result<()> {
@@ -45,7 +53,7 @@ pub fn metadata_base(value: &str) -> Result<Url> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn fetch_file(base: &str, name: &str) -> Result<Vec<u8>> {
-    anyhow::ensure!(FILES.contains(&name), "unsupported metadata file");
+    anyhow::ensure!(is_metadata_file(name), "unsupported metadata file");
     let base = metadata_base(base)?;
     // Only a loopback-origin mock may redirect to loopback HTTP. Production
     // requests cannot downgrade to HTTP, including a loopback destination.
@@ -80,7 +88,10 @@ pub fn fetch_file(base: &str, name: &str) -> Result<Vec<u8>> {
 
 pub struct Bundle {
     pub targets: Signed<AppTargetsSigned>,
-    pub files: [Vec<u8>; 3],
+    /// Exact bytes of `targets.json` as served.
+    pub targets_bytes: Vec<u8>,
+    /// Every store file the targets sign, by name.
+    pub store: BTreeMap<String, Vec<u8>>,
 }
 
 impl Bundle {
@@ -90,13 +101,22 @@ impl Bundle {
         route: &AppRoute,
         previous: Option<&Signed<AppTargetsSigned>>,
     ) -> Result<Self> {
-        let files = [
-            fetch_file(base, FILES[0])?,
-            fetch_file(base, FILES[1])?,
-            fetch_file(base, FILES[2])?,
-        ];
-        let targets = serde_json::from_slice(&files[0]).context("parse developer targets")?;
-        let bundle = Self { targets, files };
+        let targets_bytes = fetch_file(base, FILES[0])?;
+        let targets: Signed<AppTargetsSigned> =
+            serde_json::from_slice(&targets_bytes).context("parse developer targets")?;
+        // Check the signature before following the file list it contains.
+        crate::verify_app_targets(&targets, route, previous.map(|p| p.signed.version))?;
+        let store = targets
+            .signed
+            .metadata
+            .keys()
+            .map(|name| Ok((name.clone(), fetch_file(base, name)?)))
+            .collect::<Result<_>>()?;
+        let bundle = Self {
+            targets,
+            targets_bytes,
+            store,
+        };
         bundle.verify(route, previous)?;
         Ok(bundle)
     }
@@ -116,31 +136,45 @@ impl Bundle {
                 );
             }
         }
-        for (name, bytes) in FILES[1..].iter().zip(&self.files[1..]) {
+        anyhow::ensure!(
+            self.store.keys().eq(self.targets.signed.metadata.keys()),
+            "store files differ from the files the targets sign"
+        );
+        for (name, bytes) in &self.store {
             crate::verify_store_bytes(&self.targets.signed, name, bytes)?;
+            if name.ends_with(".md") {
+                anyhow::ensure!(
+                    bytes.len() <= crate::store::MAX_MARKDOWN_BYTES,
+                    "{name} exceeds {} bytes",
+                    crate::store::MAX_MARKDOWN_BYTES
+                );
+                std::str::from_utf8(bytes).with_context(|| format!("{name} must be UTF-8"))?;
+            }
         }
         let store: serde_json::Value =
-            serde_json::from_slice(&self.files[1]).context("parse store.json")?;
+            serde_json::from_slice(&self.store["store.json"]).context("parse store.json")?;
         anyhow::ensure!(store.is_object(), "store.json must be an object");
         if let Some(tags) = store.get("tags") {
             anyhow::ensure!(
-                tags.as_array().is_some_and(|tags| tags.iter().all(|tag| {
-                    tag.as_str().is_some_and(|tag| {
-                        !tag.is_empty()
-                            && tag.len() <= 32
-                            && tag
-                                .bytes()
-                                .next()
-                                .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-                            && tag
-                                .bytes()
-                                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-                    })
-                })),
+                tags.as_array().is_some_and(|tags| tags
+                    .iter()
+                    .all(|tag| tag.as_str().is_some_and(crate::store::is_tag))),
                 "invalid catalogue tags"
             );
         }
-        std::str::from_utf8(&self.files[2]).context("description.md must be UTF-8")?;
+        Ok(())
+    }
+
+    /// Every listing rule from [`crate::store::validate`]; the catalogue gate.
+    pub fn validate_listing(&self) -> Result<()> {
+        let store: serde_json::Value =
+            serde_json::from_slice(&self.store["store.json"]).context("parse store.json")?;
+        let problems = crate::store::validate(&store);
+        anyhow::ensure!(
+            problems.is_empty(),
+            "invalid store.json: {}",
+            problems.join("; ")
+        );
         Ok(())
     }
 }
@@ -161,14 +195,15 @@ pub fn aggregate_app(index: &Path, id: &str, route: &AppRoute) -> Result<&'stati
         None
     };
     let bundle = Bundle::fetch(base, route, previous.as_ref())?;
+    bundle.validate_listing()?;
     if previous
         .as_ref()
         .is_some_and(|p| p.signed.version == bundle.targets.signed.version)
     {
         // Repair damaged/missing store files even when the signed payload is equal.
-        if FILES[1..]
+        if bundle
+            .store
             .iter()
-            .zip(&bundle.files[1..])
             .all(|(name, bytes)| fs::read(dir.join(name)).ok().as_ref() == Some(bytes))
         {
             return Ok("unchanged");
@@ -187,7 +222,8 @@ pub fn aggregate_app(index: &Path, id: &str, route: &AppRoute) -> Result<&'stati
                 fs::copy(dir.join(name), staging.join(name))?;
             }
         }
-        for (name, bytes) in FILES.iter().zip(&bundle.files) {
+        fs::write(staging.join(FILES[0]), &bundle.targets_bytes)?;
+        for (name, bytes) in &bundle.store {
             fs::write(staging.join(name), bytes)?;
         }
         fs::create_dir_all(index.join("apps"))?;

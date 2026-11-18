@@ -13,6 +13,9 @@ use std::{
 use vesper_meta::{hosting::*, *};
 
 type Response = (String, Vec<u8>);
+/// A listing that passes every store rule.
+const STORE: &[u8] =
+    include_bytes!("../../../index-template/test/fixtures/store/valid-minimal.json");
 struct Mock {
     base: String,
     files: Arc<Mutex<BTreeMap<String, Response>>>,
@@ -98,7 +101,7 @@ fn publish(mock: &Mock, key: &KeyPair, version: u64) -> Signed<AppTargetsSigned>
                 priority: 0,
             }],
             metadata: [
-                ("store.json".into(), store_file_description(b"{}")),
+                ("store.json".into(), store_file_description(STORE)),
                 ("description.md".into(), store_file_description(b"Game")),
             ]
             .into(),
@@ -107,7 +110,7 @@ fn publish(mock: &Mock, key: &KeyPair, version: u64) -> Signed<AppTargetsSigned>
     )
     .unwrap();
     mock.put("targets.json", canonical_bytes(&targets).unwrap());
-    mock.put("store.json", b"{}".to_vec());
+    mock.put("store.json", STORE.to_vec());
     mock.put("description.md", b"Game".to_vec());
     targets
 }
@@ -279,4 +282,62 @@ fn metadata_url_policy_and_production_redirects() {
     }
     assert!(metadata_base("https://example.test/base").is_ok());
     assert!(metadata_base("http://127.0.0.1:1234/base").is_ok());
+}
+
+#[test]
+fn aggregate_copies_signed_documents_and_drops_unsigned_ones() {
+    let mock = Mock::new();
+    let key = KeyPair::generate();
+    let temp = tempfile::tempdir().unwrap();
+    let route = route(&mock, &key);
+    let mut targets = publish(&mock, &key, 1);
+    let changelog = b"## 1.0
+- First release
+";
+    targets
+        .signed
+        .metadata
+        .insert("changelog.md".into(), store_file_description(changelog));
+    mock.put(
+        "targets.json",
+        canonical_bytes(&sign(targets.signed, &[&key]).unwrap()).unwrap(),
+    );
+    mock.put("changelog.md", changelog.to_vec());
+    assert_eq!(
+        aggregate_app(temp.path(), "game", &route).unwrap(),
+        "updated"
+    );
+    let dir = temp.path().join("apps/game");
+    assert_eq!(fs::read(dir.join("changelog.md")).unwrap(), changelog);
+    // A later version that no longer signs the changelog removes the copy.
+    publish(&mock, &key, 2);
+    assert_eq!(
+        aggregate_app(temp.path(), "game", &route).unwrap(),
+        "updated"
+    );
+    assert!(!dir.join("changelog.md").exists());
+    assert!(dir.join("store.json").exists() && dir.join("description.md").exists());
+}
+
+#[test]
+fn aggregate_rejects_listings_that_break_store_rules() {
+    let error = rejected_mutation(|mock, key| {
+        let mut targets = publish(mock, key, 3);
+        let mut store: serde_json::Value = serde_json::from_slice(STORE).unwrap();
+        store["trailers"] = serde_json::json!([{"kind": "vimeo", "id": "1"}]);
+        let store = serde_json::to_vec(&store).unwrap();
+        targets
+            .signed
+            .metadata
+            .insert("store.json".into(), store_file_description(&store));
+        mock.put(
+            "targets.json",
+            canonical_bytes(&sign(targets.signed, &[key]).unwrap()).unwrap(),
+        );
+        mock.put("store.json", store);
+    });
+    assert!(
+        error.contains("invalid store.json") && error.contains("trailers[0]"),
+        "{error}"
+    );
 }

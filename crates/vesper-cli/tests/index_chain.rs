@@ -83,19 +83,29 @@ fn fixture(index: &Path) -> KeyPair {
         .unwrap(),
     )
     .unwrap();
-    fs::write(index.join("apps/demo/store.json"), b"{}").unwrap();
+    fs::write(index.join("apps/demo/store.json"), store()).unwrap();
     fs::write(index.join("apps/demo/description.md"), b"{}").unwrap();
     targets(index, &key, 7);
     key
 }
+/// A listing that passes every store rule, on one line so git checkouts on
+/// Windows cannot change its line endings (and its signed hash).
+fn store() -> Vec<u8> {
+    let value: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../index-template/test/fixtures/store/valid-minimal.json"
+    ))
+    .unwrap();
+    serde_json::to_vec(&value).unwrap()
+}
+
 fn targets(index: &Path, key: &KeyPair, version: u64) {
     write_json(
         &index.join("apps/demo/targets.json"),
         &sign(
             AppTargetsSigned {
-                metadata: ["store.json", "description.md"]
+                metadata: [("store.json", store()), ("description.md", b"{}".to_vec())]
                     .into_iter()
-                    .map(|name| (name.into(), vesper_meta::store_file_description(b"{}")))
+                    .map(|(name, bytes)| (name.into(), vesper_meta::store_file_description(&bytes)))
                     .collect(),
                 typ: "targets".into(),
                 spec_version: "1.0.0".into(),
@@ -576,6 +586,7 @@ fn aggregate_isolates_failed_app_reports_summary_and_initializes_registered_host
     let wrong = canonical_bytes(&sign(payload.signed, &[&KeyPair::generate()]).unwrap()).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let stopping = stop.clone();
+    let listing = store();
     let worker = std::thread::spawn(move || {
         while !stopping.load(Ordering::Relaxed) {
             let Ok((mut stream, _)) = listener.accept() else {
@@ -597,6 +608,8 @@ fn aggregate_isolates_failed_app_reports_summary_and_initializes_registered_host
                 &good
             } else if path == "/bad/targets.json" {
                 &wrong
+            } else if path.ends_with("/store.json") {
+                &listing
             } else {
                 b"{}"
             };

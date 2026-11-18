@@ -409,6 +409,27 @@ pub fn verify_app(
     })())
 }
 
+/// Check an optional signed store document (`changelog.md`,
+/// `description.<lang>.md`) against a verified targets payload and return its text.
+pub fn verify_document_impl(targets_payload: &[u8], name: &str, bytes: &[u8]) -> Result<String> {
+    anyhow::ensure!(
+        vesper_meta::store::is_store_file_name(name) && name.ends_with(".md"),
+        "{name} is not a store document"
+    );
+    let targets: AppTargetsSigned = parse(targets_payload, "targets payload")?;
+    vesper_meta::verify_store_bytes(&targets, name, bytes)?;
+    Ok(std::str::from_utf8(bytes)
+        .with_context(|| format!("{name} must be UTF-8"))?
+        .to_owned())
+}
+
+/// See [`verify_document_impl`].
+#[wasm_bindgen(js_name = verifyDocument)]
+pub fn verify_document(targets_payload: &str, name: &str, bytes: &[u8]) -> Result<String, JsError> {
+    verify_document_impl(targets_payload.as_bytes(), name, bytes)
+        .map_err(|e| JsError::new(&format!("{e:#}")))
+}
+
 /// See [`web_channel_impl`]. Returns `undefined` when no web build exists.
 #[wasm_bindgen(js_name = webChannel)]
 pub fn web_channel(targets_payload: &str, requested: &str) -> Result<Option<String>, JsError> {
@@ -548,6 +569,38 @@ mod tests {
             web_channel_impl(desktop.as_bytes(), "stable").unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn documents_must_match_their_signed_hash() {
+        let text = b"## 0.2.0
+- New vans
+";
+        let description = vesper_meta::store_file_description(text);
+        let targets = json!({"_type": "targets", "spec_version": "1.0.0", "version": 1, "expires": 1,
+            "channels": {}, "sources": [],
+            "metadata": {"changelog.md": {"length": description.length, "sha256": description.sha256}}})
+        .to_string();
+        assert_eq!(
+            verify_document_impl(targets.as_bytes(), "changelog.md", text).unwrap(),
+            "## 0.2.0
+- New vans
+"
+        );
+        let changed = verify_document_impl(
+            targets.as_bytes(),
+            "changelog.md",
+            b"## 0.2.0
+- Old vans
+",
+        );
+        assert!(changed.unwrap_err().to_string().contains("mismatch"));
+        // Unsigned or non-document names are refused before any hashing.
+        assert!(verify_document_impl(targets.as_bytes(), "changelog.ja.md", text).is_err());
+        assert!(verify_document_impl(targets.as_bytes(), "store.json", text)
+            .unwrap_err()
+            .to_string()
+            .contains("not a store document"));
     }
 
     #[test]

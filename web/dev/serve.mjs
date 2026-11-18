@@ -17,17 +17,18 @@ const roots = process.argv.flatMap((v, i) => (process.argv[i - 1] === "--root" ?
 if (!roots.length) roots.push(resolve("web/dev/out"));
 const port = Number(arg("--port", "3220"));
 const spa = process.argv.includes("--spa"); // serve index.html for unknown extensionless paths
-// Apply "/*" rules from a Cloudflare Pages style _headers file, if a root has one.
-const extraHeaders = {};
+// Apply a Cloudflare Pages style _headers file, if a root has one: "/*" and
+// "/prefix/*" rules. Without one, every response gets cross-origin isolation.
+const headerRules = [];
 for (const root of roots) {
   try {
-    let block = null;
+    let rule = null;
     for (const line of readFileSync(join(root, "_headers"), "utf8").split(/\r?\n/)) {
       if (!line.trim()) continue;
-      if (!/^\s/.test(line)) block = line.trim();
-      else if (block === "/*") {
+      if (!/^\s/.test(line)) headerRules.push((rule = { path: line.trim(), headers: {} }));
+      else if (rule) {
         const at = line.indexOf(":");
-        extraHeaders[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+        rule.headers[line.slice(0, at).trim()] = line.slice(at + 1).trim();
       }
     }
     break;
@@ -35,6 +36,8 @@ for (const root of roots) {
     // no _headers in this root
   }
 }
+const ruleMatches = (path, pathname) =>
+  path.endsWith("/*") ? pathname.startsWith(path.slice(0, -1)) || pathname === path.slice(0, -2) : pathname === path;
 const types = {
   ".json": "application/json",
   ".md": "text/markdown; charset=utf-8",
@@ -50,9 +53,11 @@ const types = {
 
 createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  // Cross-origin isolation like the deployed sites, so local games get SharedArrayBuffer.
-  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-  res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+  // Cross-origin isolation like the deployed play site, so local games get SharedArrayBuffer.
+  if (!headerRules.length) {
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+  }
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   res.setHeader("Access-Control-Allow-Headers", "Range");
   res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
@@ -79,7 +84,8 @@ createServer((req, res) => {
     stat = statSync(path);
   }
   if (!path) return res.writeHead(404).end("not found");
-  for (const [name, value] of Object.entries(extraHeaders)) res.setHeader(name, value);
+  for (const rule of headerRules)
+    if (ruleMatches(rule.path, pathname)) for (const [name, value] of Object.entries(rule.headers)) res.setHeader(name, value);
   const headers = { "Content-Type": types[extname(path)] || "application/octet-stream", "Accept-Ranges": "bytes", "Cache-Control": "no-cache" };
   const m = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range || "");
   if (m) {

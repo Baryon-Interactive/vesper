@@ -19,6 +19,7 @@ vesper-install = { path = "../vesper-install" }
 vesper-meta = { path = "../vesper-meta" }
 vesper-publish = { path = "../vesper-publish" }
 hex.workspace = true
+blake3.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 toml = "0.8"

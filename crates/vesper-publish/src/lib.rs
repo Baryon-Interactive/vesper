@@ -237,13 +237,29 @@ impl GitHubPublisher {
     /// Readers can observe a mixed generation while uploads run; signed store
     /// bindings reject that generation and retain the last valid catalogue.
     pub fn publish_metadata(&self, owner: &str, repo: &str, tag: &str, dir: &Path) -> Result<()> {
-        let files = ["store.json", "description.md", "targets.json"];
-        for name in files {
+        // The store files the targets sign (store.json, descriptions, changelogs), then targets.
+        let targets: vesper_meta::Signed<vesper_meta::AppTargetsSigned> =
+            vesper_meta::read_json(&dir.join("targets.json"))?;
+        let mut files: Vec<String> = targets.signed.metadata.keys().cloned().collect();
+        files.push("targets.json".into());
+        for name in &files {
             anyhow::ensure!(dir.join(name).is_file(), "missing metadata file {name}");
         }
         let release = self.ensure_release_with(owner, repo, tag, false)?;
         let assets = self.list_assets(&release)?;
-        for name in files {
+        // Store files that are no longer signed would only confuse readers.
+        for asset in assets.iter().filter(|asset| {
+            vesper_meta::store::is_store_file_name(&asset.name) && !files.contains(&asset.name)
+        }) {
+            let url = format!(
+                "{}/repos/{owner}/{repo}/releases/assets/{}",
+                self.api_base, asset.id
+            );
+            self.request(|| Ok(self.request_builder(self.client.delete(&url)).send()?))?
+                .error_for_status()?;
+        }
+        for name in &files {
+            let name = name.as_str();
             for asset in assets.iter().filter(|asset| asset.name == name) {
                 let url = format!(
                     "{}/repos/{owner}/{repo}/releases/assets/{}",

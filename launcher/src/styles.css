@@ -3,3 +3,5 @@
 .secondary:disabled,.small-action:disabled{opacity:.38;cursor:not-allowed;filter:saturate(.35)}.repair-files{color:#e5b35e!important}
 
 .dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}.path-preview{display:block;padding:10px 12px;background:#0e151d;border:1px solid #2c3948;border-radius:6px;color:#c7d2df;overflow-wrap:anywhere;font:11px 'DM Mono'}.danger{background:#e56e6e;color:#1b0b0b}
+
+.modal .release{margin:-6px 0 10px;color:#ffd479;font:500 12px 'DM Mono'}.facts{display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;margin:16px 0}.facts dt{font:500 10px 'DM Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6879}.facts dd{margin:3px 0 0;font-size:13px;color:#ccd5e0}.changelog{white-space:pre-wrap;font:12px/1.5 'DM Mono';max-height:180px;overflow:auto;margin:6px 0 18px}

@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod hosting;
+pub mod store;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignatureEntry {
@@ -160,13 +161,40 @@ pub fn store_file_description(bytes: &[u8]) -> StoreFileDescription {
     }
 }
 
+/// Describe the store files in `dir` for signing: `store.json` and
+/// `description.md`, plus any changelog and per-language description present.
 pub fn store_metadata(dir: &std::path::Path) -> Result<BTreeMap<String, StoreFileDescription>> {
-    ["store.json", "description.md"]
+    let mut names: Vec<String> = store::REQUIRED_FILES
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries {
+            let name = entry?.file_name().to_string_lossy().into_owned();
+            if store::is_store_file_name(&name) && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    anyhow::ensure!(
+        names.len() <= store::MAX_FILES,
+        "at most {} store files can be signed",
+        store::MAX_FILES
+    );
+    names
         .into_iter()
         .map(|name| {
-            let bytes = std::fs::read(dir.join(name))
+            let bytes = std::fs::read(dir.join(&name))
                 .with_context(|| format!("read signed store file {name}"))?;
-            Ok((name.into(), store_file_description(&bytes)))
+            if name.ends_with(".md") {
+                anyhow::ensure!(
+                    bytes.len() <= store::MAX_MARKDOWN_BYTES,
+                    "{name} exceeds {} bytes",
+                    store::MAX_MARKDOWN_BYTES
+                );
+                std::str::from_utf8(&bytes).with_context(|| format!("{name} must be UTF-8"))?;
+            }
+            Ok((name, store_file_description(&bytes)))
         })
         .collect()
 }
@@ -184,7 +212,7 @@ pub fn verify_store_bytes(targets: &AppTargetsSigned, name: &str, bytes: &[u8]) 
 }
 
 pub fn verify_store_metadata(targets: &AppTargetsSigned, dir: &std::path::Path) -> Result<()> {
-    for name in ["store.json", "description.md"] {
+    for name in targets.metadata.keys() {
         let bytes = std::fs::read(dir.join(name))
             .with_context(|| format!("read signed store file {name}"))?;
         verify_store_bytes(targets, name, &bytes)?;
@@ -212,14 +240,17 @@ pub fn validate_app_targets(targets: &AppTargetsSigned) -> Result<()> {
     if targets.typ != "targets" || targets.sources.is_empty() {
         anyhow::bail!("invalid application targets metadata");
     }
-    if targets.metadata.len() != 2
-        || ["store.json", "description.md"].iter().any(|name| {
-            targets.metadata.get(*name).is_none_or(|value| {
-                value.sha256.len() != 64 || !value.sha256.bytes().all(|b| b.is_ascii_hexdigit())
-            })
+    if targets.metadata.len() > store::MAX_FILES
+        || store::REQUIRED_FILES
+            .iter()
+            .any(|name| !targets.metadata.contains_key(*name))
+        || targets.metadata.iter().any(|(name, value)| {
+            !store::is_store_file_name(name)
+                || value.sha256.len() != 64
+                || !value.sha256.bytes().all(|b| b.is_ascii_hexdigit())
         })
     {
-        anyhow::bail!("targets must sign store.json and description.md length/SHA-256 metadata");
+        anyhow::bail!("targets must sign store.json, description.md and only other store files (changelog.md, description.<lang>.md, changelog.<lang>.md) with length/SHA-256 metadata");
     }
     for source in &targets.sources {
         if !matches!(source.kind.as_str(), "github" | "http" | "hf" | "r2") {
