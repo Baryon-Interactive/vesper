@@ -129,6 +129,9 @@ async function serve(request, url) {
       "Content-Type": TYPES[ext] || "application/octet-stream",
       "Cache-Control": "no-cache",
       "Cross-Origin-Resource-Policy": "same-origin",
+      // Game documents and worker scripts must opt in to cross-origin isolation
+      // for the game to get SharedArrayBuffer (docs/publishing.md#threads).
+      "Cross-Origin-Embedder-Policy": "credentialless",
       // Game files may only be framed by the launch page on this origin, inside
       // the store (frame-ancestors checks every ancestor, up to the top page).
       "Content-Security-Policy": `frame-ancestors 'self' ${(config.storeOrigins || []).join(" ")}`.trim(),

@@ -59,6 +59,22 @@ pub fn browser_access_problem(status: u16, headers: &reqwest::header::HeaderMap)
     None
 }
 
+/// Fetch the first byte of `url` the way a browser on another origin would and
+/// report why it could not read it, or `None` when it can.
+pub fn browser_access(url: &str) -> Result<Option<String>> {
+    let (status, headers) = crate::transfer::runtime()?.block_on(async {
+        let response = crate::transfer::client()?
+            .get(url)
+            .header("Origin", BROWSER_PROBE_ORIGIN)
+            .header("Range", "bytes=0-0")
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await?;
+        anyhow::Ok((response.status(), response.headers().clone()))
+    })?;
+    Ok(browser_access_problem(status.as_u16(), &headers).map(|problem| format!("{url} {problem}")))
+}
+
 pub fn validate_url(value: &str) -> Result<Url> {
     let url = Url::parse(value).context("invalid mirror URL")?;
     anyhow::ensure!(
@@ -351,24 +367,12 @@ impl R2Publisher {
     /// Read the first byte of an uploaded object from its public URL, as the
     /// web player on another origin would. Returns the problem, if any.
     pub fn browser_access(&self, tag: &str, name: &str) -> Result<Option<String>> {
-        let url = format!(
+        browser_access(&format!(
             "{}/{}/{}",
             self.config.public_base.trim_end_matches('/'),
             urlencoding::encode(tag),
             urlencoding::encode(name)
-        );
-        let (status, headers) = crate::transfer::runtime()?.block_on(async {
-            let response = crate::transfer::client()?
-                .get(&url)
-                .header("Origin", BROWSER_PROBE_ORIGIN)
-                .header("Range", "bytes=0-0")
-                .timeout(Duration::from_secs(30))
-                .send()
-                .await?;
-            anyhow::Ok((response.status(), response.headers().clone()))
-        })?;
-        Ok(browser_access_problem(status.as_u16(), &headers)
-            .map(|problem| format!("{url} {problem}")))
+        ))
     }
     pub fn check_remote_manifest(
         &self,

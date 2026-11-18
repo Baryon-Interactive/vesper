@@ -39,6 +39,8 @@ test("play frame messages are reduced to plain values", async () => {
   });
   expect(playEvent({ type: "vesper-error", message: { toString: () => "boom" } })).toEqual({ type: "error", message: "boom" });
   expect(playEvent({ type: "vesper-error", message: "x".repeat(1000) })).toMatchObject({ message: "x".repeat(300) });
+  expect(playEvent({ type: "vesper-started", isolated: true })).toEqual({ type: "started", isolated: true });
+  expect(playEvent({ type: "vesper-started", isolated: "yes" })).toEqual({ type: "started", isolated: false });
   expect(playEvent({ type: "other" })).toBeNull();
   expect(playEvent("vesper-started")).toBeNull();
   expect(playUrl("https://play.example", "a b")).toBe("https://play.example/launch.html?app=a+b&channel=stable");

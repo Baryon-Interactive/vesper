@@ -130,7 +130,10 @@ This writes two static sites, `web/dist/store` and `web/dist/play`. Each
 gets its own `vesper-config.json` and a Cloudflare Pages `_headers` file. The
 store's Content Security Policy allows only its own scripts and WebAssembly,
 the catalogue and https media, and frames from the play origin. The play
-site allows framing only by the store. Deploy them to two different origins,
+site allows framing only by the store. Both sites send
+`Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`, so games are
+cross-origin isolated and get `SharedArrayBuffer`; see
+[threads](../docs/publishing.md#threads-and-sharedarraybuffer). Deploy them to two different origins,
 each at the root of its host name, because the service worker and runtime use
 absolute paths. The store is a single-page app: unknown paths must serve
 `index.html`, which Cloudflare Pages does by default when there is no
@@ -143,8 +146,8 @@ applies the `/*` rules from `_headers`.
 
 - Paid builds: encrypted manifests are refused in the browser, and DepotKey
   delivery to the browser is not designed yet.
-- Multi-threaded engines need `SharedArrayBuffer`, which needs COOP/COEP
-  headers on the play site, and a store frame that allows cross-origin isolation.
+- Cross-origin isolation uses `credentialless`, which Safari does not
+  support yet: threaded builds need a single-threaded fallback there.
 - Games share one play origin, so they share its storage (saves, Cache
   Storage). Verified chunks cannot be poisoned, but one game can read or clear
   another's saves, or clear the rollback records. A per-game origin would

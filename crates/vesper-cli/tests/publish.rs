@@ -925,3 +925,91 @@ fn r2_all_channels_are_verified_before_targets_and_promote_requires_publish() {
     assert!(!invoke(false).status.success());
     assert_eq!(fs::read(metadata.join("targets.json")).unwrap(), targets);
 }
+
+#[test]
+fn relay_from_vesper_toml_is_signed_as_a_source_and_checked_for_browsers() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input");
+    let build = temp.path().join("build");
+    let metadata = temp.path().join("metadata");
+    fs::create_dir_all(&input).unwrap();
+    fs::write(input.join("index.html"), vec![b'x'; 8192]).unwrap();
+    fs::create_dir_all(&metadata).unwrap();
+    fs::write(metadata.join("store.json"), b"{}").unwrap();
+    fs::write(metadata.join("description.md"), b"Relay test").unwrap();
+    assert_success(vesper(&[
+        "pack",
+        "--input",
+        input.to_str().unwrap(),
+        "--output",
+        build.to_str().unwrap(),
+        "--app-id",
+        "test.publish",
+        "--platform",
+        "web-wasm32",
+        "--version",
+        "r2",
+    ]));
+    let server = GitHubMock::new();
+    // The mock's download route answers ranges like a relay, but without CORS.
+    fs::write(
+        temp.path().join("vesper.toml"),
+        format!(
+            "app_id = 'test.publish'\nrelay = '{}/download/'\n",
+            server.base
+        ),
+    )
+    .unwrap();
+    let publish = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_vesper"))
+            .current_dir(temp.path())
+            .arg("publish")
+            .arg(&build)
+            .args(extra)
+            .env("VESPER_DEV_KEY", "13".repeat(32))
+            .output()
+            .unwrap()
+    };
+    let output = publish(&[
+        "--metadata-dir",
+        metadata.to_str().unwrap(),
+        "--owner",
+        "owner",
+        "--repo",
+        "repo",
+        "--token",
+        "mock-token",
+        "--api-base",
+        &server.base,
+        "--upload-base",
+        &server.base,
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("browsers cannot read this build through the relay")
+            && stderr.contains("Access-Control-Allow-Origin"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("shared GitHub proxy"), "{stderr}");
+    let remote = server.remote.lock().unwrap();
+    let targets: Value = serde_json::from_slice(&remote.metadata_assets["targets.json"]).unwrap();
+    let sources = targets["signed"]["sources"].as_array().unwrap();
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0]["kind"], "github");
+    assert_eq!(sources[1]["id"], "relay");
+    assert_eq!(sources[1]["kind"], "http");
+    assert_eq!(sources[1]["priority"], 2);
+    assert_eq!(
+        sources[1]["url_template"],
+        format!("{}/download/{{release}}/{{pack_id}}", server.base)
+    );
+    drop(remote);
+
+    // A relay only serves GitHub Releases.
+    let index = temp.path().join("index");
+    fs::create_dir_all(&index).unwrap();
+    let refused = publish(&["--index", index.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("requires --owner and --repo"));
+}

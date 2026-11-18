@@ -195,6 +195,10 @@ enum Command {
         api_base: Option<String>,
         #[arg(long)]
         upload_base: Option<String>,
+        /// Your own GitHub relay (github-proxy in relay mode), signed as an extra
+        /// download source; also read from `relay = "..."` in vesper.toml.
+        #[arg(long)]
+        relay: Option<String>,
     },
     Promote {
         from: String,
@@ -587,6 +591,7 @@ fn run_command(command: Command) -> Result<()> {
             token,
             api_base,
             upload_base,
+            relay,
         } => publish_local(
             &build,
             tag.as_deref(),
@@ -602,6 +607,7 @@ fn run_command(command: Command) -> Result<()> {
                 token: token.as_deref(),
                 api_base: api_base.as_deref(),
                 upload_base: upload_base.as_deref(),
+                relay: relay_template(relay)?,
             },
         )?,
         Command::Promote { from, to, index } => promote_channel(&from, &to, &index)?,
@@ -939,7 +945,7 @@ fn run_command(command: Command) -> Result<()> {
                     &manifest,
                     &manifest_value,
                     Some((&owner, &repo)),
-                    None,
+                    ExtraSources::default(),
                 )?;
             }
             println!(
@@ -1134,6 +1140,33 @@ struct PublishRemote<'a> {
     token: Option<&'a str>,
     api_base: Option<&'a str>,
     upload_base: Option<&'a str>,
+    /// Source template of the developer's own GitHub relay.
+    relay: Option<String>,
+}
+
+/// The `{release}/{pack_id}` template of a relay from `--relay` or `relay` in vesper.toml.
+fn relay_template(cli: Option<String>) -> Result<Option<String>> {
+    #[derive(serde::Deserialize, Default)]
+    struct Config {
+        relay: Option<String>,
+    }
+    let value = match cli {
+        Some(value) => Some(value),
+        None if std::path::Path::new("vesper.toml").exists() => {
+            toml::from_str::<Config>(&fs::read_to_string("vesper.toml")?)
+                .context("invalid relay in vesper.toml")?
+                .relay
+        }
+        None => None,
+    };
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let url = vesper_publish::r2::validate_url(&value).context("invalid relay URL")?;
+    Ok(Some(format!(
+        "{}/{{release}}/{{pack_id}}",
+        url.as_str().trim_end_matches('/')
+    )))
 }
 
 fn publish_local(
@@ -1178,6 +1211,10 @@ fn publish_local(
     anyhow::ensure!(
         r2.is_none() || remote.owner.zip(remote.repo).is_some(),
         "R2 publishing requires --owner and --repo"
+    );
+    anyhow::ensure!(
+        remote.relay.is_none() || remote.owner.zip(remote.repo).is_some(),
+        "a relay serves GitHub Releases; it requires --owner and --repo"
     );
     if dry_run || (index.is_none() && !self_hosted) {
         println!(
@@ -1261,8 +1298,11 @@ fn publish_local(
             if manifest.platform == WEB_PLATFORM {
                 report_browser_access(r2, tag, &manifest_path);
             }
-        } else if manifest.platform == WEB_PLATFORM {
-            eprintln!("note: without a mirror, browsers load this web build through the catalogue's GitHub proxy, which is slower and rate limited; add an R2 or S3 mirror (docs/publishing.md#web-builds)");
+        } else if manifest.platform == WEB_PLATFORM && remote.relay.is_none() {
+            eprintln!("note: without a mirror or relay, browsers load this web build through the catalogue's shared GitHub proxy, which is slower and rate limited; add an R2 or S3 mirror (docs/publishing.md#web-builds)");
+        }
+        if let Some(relay) = &remote.relay {
+            report_relay_access(relay, tag, &manifest_path);
         }
         if self_hosted {
             let dir = remote
@@ -1275,7 +1315,10 @@ fn publish_local(
                 &manifest_path,
                 &manifest,
                 Some((owner, repo)),
-                remote.r2.as_ref().map(R2Config::url_template).as_deref(),
+                ExtraSources {
+                    r2: remote.r2.as_ref().map(R2Config::url_template).as_deref(),
+                    relay: remote.relay.as_deref(),
+                },
             )?;
             publisher.publish_metadata(owner, repo, remote.metadata_tag, dir).with_context(||
                 format!("local targets v{version} is signed but unpublished; rerun publish to publish it"))?;
@@ -1298,7 +1341,10 @@ fn publish_local(
         &manifest_path,
         &manifest,
         remote.owner.zip(remote.repo),
-        remote.r2.as_ref().map(R2Config::url_template).as_deref(),
+        ExtraSources {
+            r2: remote.r2.as_ref().map(R2Config::url_template).as_deref(),
+            relay: remote.relay.as_deref(),
+        },
     )
 }
 
@@ -1312,9 +1358,26 @@ fn report_browser_access(r2: &R2Publisher, tag: &str, manifest_path: &std::path:
     match r2.browser_access(tag, name) {
         Ok(None) => println!("r2 browser access ok (CORS and byte ranges)"),
         Ok(Some(problem)) => eprintln!(
-            "warning: browsers cannot read this web build from the mirror: {problem}.              Add the CORS rule from docs/publishing.md#web-builds to the bucket; until then              the web player falls back to the GitHub proxy"
+            "warning: browsers cannot read this web build from the mirror: {problem}. Add the CORS rule from docs/publishing.md#web-builds to the bucket; until then the web player falls back to the GitHub proxy"
         ),
         Err(error) => eprintln!("warning: could not check browser access to the mirror: {error:#}"),
+    }
+}
+
+/// A relay must answer browsers with CORS and byte ranges, like a mirror.
+fn report_relay_access(template: &str, tag: &str, manifest_path: &std::path::Path) {
+    let Some(name) = manifest_path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let url = template
+        .replace("{release}", tag)
+        .replace("{pack_id}", name);
+    match vesper_publish::r2::browser_access(&url) {
+        Ok(None) => println!("relay browser access ok (CORS and byte ranges)"),
+        Ok(Some(problem)) => eprintln!(
+            "warning: browsers cannot read this build through the relay: {problem}. Deploy github-proxy with REPO set to this repository (github-proxy/README.md)"
+        ),
+        Err(error) => eprintln!("warning: could not check the relay: {error:#}"),
     }
 }
 
@@ -1495,6 +1558,13 @@ fn publish_tag<'a>(manifest: &'a Manifest, tag: Option<&'a str>) -> Result<&'a s
     Ok(&manifest.version)
 }
 
+/// Signed download sources next to GitHub Releases: an R2/S3 mirror and a relay.
+#[derive(Clone, Copy, Default)]
+struct ExtraSources<'a> {
+    r2: Option<&'a str>,
+    relay: Option<&'a str>,
+}
+
 fn write_publish_index(
     index: &std::path::Path,
     channel: &str,
@@ -1502,7 +1572,7 @@ fn write_publish_index(
     manifest_path: &std::path::Path,
     manifest: &Manifest,
     github: Option<(&str, &str)>,
-    r2_template: Option<&str>,
+    extra: ExtraSources<'_>,
 ) -> Result<()> {
     let app_dir = index.join("apps").join(&manifest.app_id);
     write_publish_metadata(
@@ -1512,7 +1582,7 @@ fn write_publish_index(
         manifest_path,
         manifest,
         github,
-        r2_template,
+        extra,
     )?;
     println!(
         "updated {} (upload packs with GitHub publisher, then commit this checkout)",
@@ -1529,7 +1599,7 @@ fn write_publish_metadata(
     manifest_path: &std::path::Path,
     manifest: &Manifest,
     github: Option<(&str, &str)>,
-    r2_template: Option<&str>,
+    extra: ExtraSources<'_>,
 ) -> Result<u64> {
     fs::create_dir_all(app_dir)?;
     let targets_path = app_dir.join("targets.json");
@@ -1569,12 +1639,21 @@ fn write_publish_metadata(
             priority: 0,
         }];
     }
-    if let Some(template) = r2_template {
+    if let Some(template) = extra.r2 {
         targets.sources.push(AppSource {
             id: "r2".into(),
             kind: "r2".into(),
             url_template: template.into(),
             priority: 1,
+        });
+    }
+    if let Some(template) = extra.relay {
+        // A plain CORS source to clients; browsers use it before the shared proxy.
+        targets.sources.push(AppSource {
+            id: "relay".into(),
+            kind: "http".into(),
+            url_template: template.into(),
+            priority: 2,
         });
     }
     targets.version = targets.version.saturating_add(1);

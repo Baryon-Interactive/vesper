@@ -41,6 +41,12 @@ for (const file of ["vesper/pkg/vesper_web_bg.wasm", "vesper/root.json"]) {
 const json = (value) => JSON.stringify(value, null, 2) + "\n";
 const headers = (rules) => Object.entries(rules).map(([path, list]) => `${path}\n${list.map((h) => `  ${h}`).join("\n")}\n`).join("");
 const common = ["X-Content-Type-Options: nosniff", "Referrer-Policy: strict-origin-when-cross-origin"];
+// Cross-origin isolation, so games get SharedArrayBuffer and WebAssembly threads.
+// Every document from the store page down to the game must send these; the
+// service worker adds COEP to game files. `credentialless` (not `require-corp`)
+// still loads cross-origin images, fonts and scripts, without cookies.
+// Browsers without `credentialless` ignore it and run games without isolation.
+const isolation = ["Cross-Origin-Opener-Policy: same-origin", "Cross-Origin-Embedder-Policy: credentialless"];
 
 // Store: drop local-only files, write its config and a strict CSP.
 for (const file of ["vesper-config.dev.json", "vesper/dev-root.json"]) rmSync(join(store, file), { force: true });
@@ -53,6 +59,7 @@ writeFileSync(
   headers({
     "/*": [
       `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data:; connect-src 'self' ${new URL(apiBase).origin} https:; worker-src 'self'; frame-src ${playOrigin}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`,
+      ...isolation,
       ...common,
     ],
   }),
@@ -75,7 +82,8 @@ writeFileSync(
   headers({
     // Only the store may embed the launch page. Games inherit no permissions
     // beyond what the store's iframe delegates.
-    "/*": [`Content-Security-Policy: frame-ancestors ${storeOrigin}`, ...common],
+    // CORP lets the isolated store page embed the launch page.
+    "/*": [`Content-Security-Policy: frame-ancestors ${storeOrigin}`, ...isolation, "Cross-Origin-Resource-Policy: cross-origin", ...common],
     "/sw.js": ["Cache-Control: no-cache"],
   }),
 );

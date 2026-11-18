@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createProxy, githubUrl, parsePath } from "../src/index.js";
+import { createProxy, githubUrl, parsePath, parseRelayPath } from "../src/index.js";
 
 const CATALOGUE = "https://catalogue.example/index/";
 const targets = {
@@ -87,4 +87,24 @@ test("targets are cached per app for five minutes", async () => {
   clock += 5 * 60 * 1000;
   await get();
   assert.equal(calls.filter((c) => c.url.endsWith("targets.json")).length, 2);
+});
+
+test("relay mode serves one repository without a catalogue", async () => {
+  const calls = [];
+  const proxy = createProxy({ fetchImpl: fakeFetch(calls) });
+  const env = { REPO: "example/game-builds" };
+  const response = await proxy.fetch(new Request("https://relay.example/v1.0.0-web/pack-ab.vpack", { headers: { Range: "bytes=0-3" } }), env);
+  assert.equal(response.status, 206);
+  assert.equal(await response.text(), "abcd");
+  assert.equal(response.headers.get("access-control-allow-origin"), "*");
+  assert.equal(response.headers.get("cross-origin-resource-policy"), "cross-origin");
+  assert.deepEqual(calls.map((c) => c.url), ["https://github.com/example/game-builds/releases/download/v1.0.0-web/pack-ab.vpack"]);
+
+  const status = async (url, e = env) => (await proxy.fetch(new Request(url), e)).status;
+  assert.equal(await status("https://relay.example/demo/v1/pack.vpack"), 400);
+  assert.equal(await status("https://relay.example/v1/..%2Fx"), 400);
+  assert.equal(await status("https://relay.example/v1/pack.vpack", { REPO: "not a repo" }), 500);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(parseRelayPath("/v1/pack-a.vpack"), { release: "v1", asset: "pack-a.vpack" });
+  assert.equal(parseRelayPath("/v1/.."), null);
 });

@@ -114,6 +114,15 @@ base are required when R2 is configured; supply account ID or endpoint.
 Prefix defaults to empty. R2 requires `--owner` and `--repo` for a complete
 GitHub-backed mirror, in both `--metadata-dir` and `--index` modes.
 
+### Relay option
+
+`publish --relay <URL>` (or `relay = "<URL>"` at the top of `vesper.toml`)
+signs a developer's own GitHub relay, the `github-proxy` Worker in relay
+mode, as an extra `http` source with template `<URL>/{release}/{pack_id}`.
+It requires `--owner` and `--repo`. After the upload, `publish` checks that a
+browser on another origin can read the manifest through the relay and warns
+otherwise; see [your own relay](publishing.md#your-own-relay).
+
 Only `VESPER_R2_ACCESS_KEY_ID` and `VESPER_R2_SECRET_ACCESS_KEY` supply credentials.
 The publisher uses path-style SigV4 PUT/HEAD, region `auto`, service `s3`.
 HEAD compares size and signed BLAKE3 object metadata before skipping and after
