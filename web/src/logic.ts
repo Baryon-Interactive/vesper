@@ -183,6 +183,11 @@ const LABELS: Record<string, string> = {
 /** English label for a store slug (feature, descriptor, link, ...); unknown slugs pass through. */
 export const label = (slug: string): string => LABELS[slug] ?? slug;
 
+/** Label for the release date: only a coming-soon date is a plan. */
+export function releaseDateLabel(status: string | undefined): string {
+  return status === "coming-soon" ? "Planned release" : status === "early-access" ? "Early access since" : "Release date";
+}
+
 /** A YYYY-MM-DD date as a readable day, without time-zone shifts. */
 export function formatDate(date: string, locale?: string): string {
   const [y, m, d] = date.split("-").map(Number);

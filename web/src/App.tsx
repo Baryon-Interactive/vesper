@@ -12,6 +12,7 @@ import {
   parseRoute,
   platformLabel,
   playable,
+  releaseDateLabel,
   releaseLine,
   routePath,
   youtubeEmbed,
@@ -474,7 +475,7 @@ function Facts({ app, store, web, desktop }: { app: AppDetail; store: Store; web
     <dl>
       {store.release?.date && (
         <>
-          <dt>{store.release.status === "released" ? "Release date" : "Planned release"}</dt>
+          <dt>{releaseDateLabel(store.release.status)}</dt>
           <dd>{formatDate(store.release.date, locale)}</dd>
         </>
       )}
