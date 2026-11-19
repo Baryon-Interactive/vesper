@@ -17,8 +17,10 @@ const roots = process.argv.flatMap((v, i) => (process.argv[i - 1] === "--root" ?
 if (!roots.length) roots.push(resolve("web/dev/out"));
 const port = Number(arg("--port", "3220"));
 const spa = process.argv.includes("--spa"); // serve index.html for unknown extensionless paths
-// Apply a Cloudflare Pages style _headers file, if a root has one: "/*" and
-// "/prefix/*" rules. Without one, every response gets cross-origin isolation.
+// Apply a Cloudflare Pages style _headers file, if a root has one: "/*",
+// "/prefix/*" and exact-path rules. As on Cloudflare, a header set by several
+// matching rules gets their values joined with ", ". Without a _headers file,
+// every response gets cross-origin isolation.
 const headerRules = [];
 for (const root of roots) {
   try {
@@ -84,8 +86,11 @@ createServer((req, res) => {
     stat = statSync(path);
   }
   if (!path) return res.writeHead(404).end("not found");
+  const ruled = {};
   for (const rule of headerRules)
-    if (ruleMatches(rule.path, pathname)) for (const [name, value] of Object.entries(rule.headers)) res.setHeader(name, value);
+    if (ruleMatches(rule.path, pathname))
+      for (const [name, value] of Object.entries(rule.headers)) ruled[name] = ruled[name] ? `${ruled[name]}, ${value}` : value;
+  for (const [name, value] of Object.entries(ruled)) res.setHeader(name, value);
   const headers = { "Content-Type": types[extname(path)] || "application/octet-stream", "Accept-Ranges": "bytes", "Cache-Control": "no-cache" };
   const m = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range || "");
   if (m) {

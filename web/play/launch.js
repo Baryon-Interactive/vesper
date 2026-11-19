@@ -11,7 +11,16 @@
 // verify and open the web build, then runs the game in a nested frame. It
 // reports progress to the embedding store with postMessage, and only to a
 // store origin listed in this site's configuration.
+//
+// The page never waits forever on the worker. The worker that gets the
+// prepare request can be replaced before it answers (a new sw.js activates and
+// claims the page), so the request is sent again to each newly activated
+// worker. An attempt without an answer for PREPARE_TIMEOUT_MS is sent once
+// more, and the page then shows an error that asks for a reload.
 "use strict";
+const PREPARE_TIMEOUT_MS = 45000;
+const READY_TIMEOUT_MS = 30000;
+const RELOAD_HINT = "Reload the page to try again.";
 (async () => {
   const status = document.getElementById("status");
   const show = (text, error = false) => {
@@ -61,7 +70,16 @@
         done();
       });
     }
-    const registration = await navigator.serviceWorker.ready;
+    const workers = navigator.serviceWorker;
+    // Messages from the worker are held until the page starts them.
+    if (workers.startMessages) workers.startMessages();
+    const registration = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`The game service worker did not start. ${RELOAD_HINT}`)), READY_TIMEOUT_MS);
+      workers.ready.then((ready) => {
+        clearTimeout(timer);
+        resolve(ready);
+      }, reject);
+    });
     navigator.serviceWorker.addEventListener("message", (event) => {
       const data = event.data || {};
       if (data.type === "vesper-progress") report({ type: "vesper-progress", stats: data.stats });
@@ -70,16 +88,51 @@
         if (!frame) show(data.message, true);
       }
     });
-    const id = Math.random().toString(36).slice(2);
     const prepared = await new Promise((resolve, reject) => {
-      const listener = (event) => {
-        if (event.data?.id !== id) return;
-        navigator.serviceWorker.removeEventListener("message", listener);
-        if (event.data.type === "vesper-ready") resolve(event.data);
-        else reject(new Error(event.data.message));
+      const ids = new Set(); // every request sent; the first answer wins
+      let target = null;
+      let timer = 0;
+      let retried = false;
+      const send = (again) => {
+        const worker = registration.active || workers.controller;
+        if (!worker || (worker === target && !again)) return;
+        target = worker;
+        const id = Math.random().toString(36).slice(2);
+        ids.add(id);
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          if (!retried) {
+            retried = true;
+            send(true);
+          } else finish(new Error(`Checking signatures took too long. ${RELOAD_HINT}`));
+        }, PREPARE_TIMEOUT_MS);
+        worker.postMessage({ type: "vesper-prepare", appId, channel, id });
       };
-      navigator.serviceWorker.addEventListener("message", listener);
-      registration.active.postMessage({ type: "vesper-prepare", appId, channel, id });
+      const onMessage = (event) => {
+        const data = event.data || {};
+        if (!ids.has(data.id)) return;
+        if (data.type === "vesper-ready") finish(null, data);
+        else finish(new Error(data.message));
+      };
+      const onChange = () => send(false);
+      // A worker still installing (the wait above gives up after 10 s) or one
+      // found while preparing gets the request once it is active.
+      const follow = (worker) =>
+        worker && worker.addEventListener("statechange", () => worker.state === "activated" && send(false));
+      const onUpdate = () => follow(registration.installing);
+      const finish = (error, data) => {
+        clearTimeout(timer);
+        workers.removeEventListener("message", onMessage);
+        workers.removeEventListener("controllerchange", onChange);
+        registration.removeEventListener("updatefound", onUpdate);
+        if (error) reject(error);
+        else resolve(data);
+      };
+      workers.addEventListener("message", onMessage);
+      workers.addEventListener("controllerchange", onChange);
+      registration.addEventListener("updatefound", onUpdate);
+      follow(registration.installing || registration.waiting);
+      send(true);
     });
     report({ type: "vesper-ready", version: prepared.version, channel: prepared.channel });
     const accepted = Array.isArray(prepared.playParams) ? prepared.playParams : [];

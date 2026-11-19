@@ -137,7 +137,13 @@ This writes two static sites, `web/dist/store` and `web/dist/play`. Each
 gets its own `vesper-config.json` and a Cloudflare Pages `_headers` file. The
 store's Content Security Policy allows only its own scripts and WebAssembly,
 the catalogue and https media, and frames from the play origin. The play
-site allows framing only by the store. The play site, and the store's
+site allows framing only by the store, and its own pages (`launch.html`,
+`index.html`) run only its scripts. Both policies also allow the Cloudflare
+Web Analytics beacon (`static.cloudflareinsights.com`, reporting to
+`cloudflareinsights.com`) that Cloudflare injects into the HTML it serves.
+Games under `/run/` are served by the service worker, so the host never
+injects into them, and their pages keep only the `frame-ancestors` policy.
+The play site, and the store's
 `/play/*` pages, send `Cross-Origin-Opener-Policy` and
 `Cross-Origin-Embedder-Policy`, so games are cross-origin isolated and get
 `SharedArrayBuffer`. Other store pages are not isolated, so they can embed

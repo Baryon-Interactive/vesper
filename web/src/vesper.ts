@@ -9,6 +9,15 @@ const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Err
 function catalogueWorker(): Worker {
   if (!worker) {
     worker = new Worker("/vesper/catalogue-worker.js");
+    // A worker that cannot load (blocked script, network error) fails every
+    // waiting call instead of leaving it pending; the next call starts a new one.
+    worker.onerror = (event: ErrorEvent) => {
+      event.preventDefault();
+      worker = null;
+      const error = new Error(event.message || "The catalogue worker could not start");
+      for (const entry of pending.values()) entry.reject(error);
+      pending.clear();
+    };
     worker.onmessage = (event: MessageEvent) => {
       const { id, ok, value, error } = event.data;
       const entry = pending.get(id);
@@ -78,21 +87,23 @@ export const MAX_PLAY_PARAM_VALUE = 256;
  * play page's own query string (for example an invite's `?code=ROOM`); only the
  * keys in `accepted` (the listing's `play_params`) are forwarded, with values of
  * at most 256 characters. The launch page applies the same filter from the
- * verified listing, so this only keeps other keys out of its URL.
+ * verified listing, so this only keeps other keys out of its URL. With
+ * `accepted` null (the listing could not be read in time), every key that a
+ * listing could name is passed on and the launch page does the filtering.
  */
 export function playUrl(
   playOrigin: string,
   appId: string,
   channel = "stable",
   gameQuery = "",
-  accepted: readonly string[] = [],
+  accepted: readonly string[] | null = [],
 ): string {
   const url = new URL("/launch.html", playOrigin);
   url.searchParams.set("app", appId);
   url.searchParams.set("channel", channel);
   for (const [key, value] of new URLSearchParams(gameQuery)) {
-    if (!RESERVED_PLAY_PARAMS.includes(key) && accepted.includes(key) && value.length <= MAX_PLAY_PARAM_VALUE)
-      url.searchParams.append(key, value);
+    const allowed = accepted ? accepted.includes(key) : /^[A-Za-z0-9_-]{1,32}$/.test(key);
+    if (!RESERVED_PLAY_PARAMS.includes(key) && allowed && value.length <= MAX_PLAY_PARAM_VALUE) url.searchParams.append(key, value);
   }
   return url.href;
 }

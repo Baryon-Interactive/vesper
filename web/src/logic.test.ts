@@ -64,6 +64,10 @@ test("play frame messages are reduced to plain values", async () => {
   expect(playUrl("https://play.example", "game", "stable", invite, ["code", "name", "long", "app"])).toBe(
     "https://play.example/launch.html?app=game&channel=stable&code=AB12&name=a+b&code=2",
   );
+  // Listing unknown: keys a listing could name pass, the launch page filters.
+  expect(playUrl("https://play.example", "game", "stable", `${invite}&a%20b=1`, null)).toBe(
+    "https://play.example/launch.html?app=game&channel=stable&code=AB12&name=a+b&newrun=1&code=2",
+  );
 });
 
 test("listing helpers: release line, gallery order, labels, changelog language", () => {
