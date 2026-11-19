@@ -76,13 +76,23 @@ self.addEventListener("message", (event) => {
         VesperCore.resetStats();
         await rememberChannel(appId, channel || "stable");
         const b = await build(appId, channel);
-        reply({ type: "vesper-ready", appId, version: b.summary.version, channel: b.channelName, files: b.summary.files.length, entry: entryOf(b) });
+        reply({ type: "vesper-ready", appId, version: b.summary.version, channel: b.channelName, files: b.summary.files.length, entry: entryOf(b), playParams: playParamsOf(b) });
       } catch (error) {
         reply({ type: "vesper-error", appId, message: String(error?.message || error) });
       }
     })(),
   );
 });
+
+/**
+ * Query keys the game accepts from play links: `play_params` in its signed
+ * store listing. The catalogue gate checks the field; the key rule is applied
+ * again here so a listing that skipped the gate cannot widen it.
+ */
+function playParamsOf(b) {
+  const keys = Array.isArray(b.store?.play_params) ? b.store.play_params : [];
+  return keys.filter((k) => typeof k === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(k) && k !== "app" && k !== "channel").slice(0, 16);
+}
 
 function entryOf(b) {
   const launch = b.summary.launch;

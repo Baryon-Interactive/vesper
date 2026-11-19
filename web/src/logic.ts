@@ -33,6 +33,7 @@ export type Store = {
   publishers?: string[];
   content_descriptors?: string[];
   accessibility?: string[];
+  play_params?: string[];
 };
 export type Channel = { version: number; platform: string; encrypted: boolean; manifest: { release_tag: string; size: number } };
 export type AppSummary = {

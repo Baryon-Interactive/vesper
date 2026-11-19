@@ -1,8 +1,9 @@
 // Vesper play site launch page: /launch.html?app=<app_id>&channel=<channel>[&<game params>]
 //
-// Query keys other than `app` and `channel` belong to the game: they are passed
-// on, URL-encoded, in the query of the game frame (for example an invite's
-// `code=ROOM`). Fragments are not forwarded.
+// Other query keys are passed on, URL-encoded, in the query of the game frame
+// (for example an invite's `code=ROOM`), but only the keys the game lists in
+// `play_params` of its signed store listing, and only values of at most 256
+// characters. Nothing else reaches the game; fragments are never forwarded.
 //
 // This page lives on the play origin, separate from the store, because games
 // are third-party code: anything under /run/ shares this origin and must never
@@ -22,9 +23,6 @@
   const params = new URLSearchParams(location.search);
   const appId = params.get("app") || "";
   const channel = params.get("channel") || "stable";
-  const gameParams = new URLSearchParams();
-  for (const [key, value] of params) if (key !== "app" && key !== "channel") gameParams.append(key, value);
-  const gameQuery = gameParams.toString();
   const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
 
   let config = {};
@@ -84,6 +82,12 @@
       registration.active.postMessage({ type: "vesper-prepare", appId, channel, id });
     });
     report({ type: "vesper-ready", version: prepared.version, channel: prepared.channel });
+    const accepted = Array.isArray(prepared.playParams) ? prepared.playParams : [];
+    const gameParams = new URLSearchParams();
+    for (const [key, value] of params) {
+      if (key !== "app" && key !== "channel" && accepted.includes(key) && value.length <= 256) gameParams.append(key, value);
+    }
+    const gameQuery = gameParams.toString();
     show("Streaming the first files…");
     frame = document.createElement("iframe");
     frame.id = "game";
