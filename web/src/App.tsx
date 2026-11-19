@@ -631,7 +631,7 @@ function PlayPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
     }, () => {});
     siteConfig().then((config) => {
       playOrigin = config.playOrigin;
-      setSrc(playUrl(config.playOrigin, appId));
+      setSrc(playUrl(config.playOrigin, appId, "stable", location.search));
     }, (e: Error) => setError(e.message));
     return () => removeEventListener("message", onMessage);
   }, [appId]);

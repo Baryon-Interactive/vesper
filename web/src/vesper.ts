@@ -68,11 +68,22 @@ export function siteConfig(): Promise<SiteConfig> {
   return configPromise;
 }
 
-/** URL of the launch page on the separate play origin. */
-export function playUrl(playOrigin: string, appId: string, channel = "stable"): string {
+/** Launch page query keys owned by Vesper; every other key is passed to the game. */
+export const RESERVED_PLAY_PARAMS = ["app", "channel"];
+
+/**
+ * URL of a game's launch page on the separate play origin. `gameQuery` is the
+ * play page's own query string (for example an invite's `?code=ROOM`): its keys
+ * other than `app` and `channel` are forwarded, and the launch page hands them
+ * to the game frame.
+ */
+export function playUrl(playOrigin: string, appId: string, channel = "stable", gameQuery = ""): string {
   const url = new URL("/launch.html", playOrigin);
   url.searchParams.set("app", appId);
   url.searchParams.set("channel", channel);
+  for (const [key, value] of new URLSearchParams(gameQuery)) {
+    if (!RESERVED_PLAY_PARAMS.includes(key)) url.searchParams.append(key, value);
+  }
   return url.href;
 }
 

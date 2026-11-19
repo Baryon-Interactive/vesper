@@ -47,7 +47,10 @@ embedded only by the configured store origins (`frame-ancestors`).
    `<play origin>/launch.html?app=<app_id>`. The play site's service worker
    verifies the catalogue again, downloads the manifest and checks its signed
    size and BLAKE3 hash. The launch page then loads `/run/<app_id>/index.html`
-   (or the manifest's `.html` launch entry) in a nested frame.
+   (or the manifest's `.html` launch entry) in a nested frame. Query keys on
+   the play page other than `app` and `channel` reach the game frame's query,
+   so `/play/<app_id>?code=ROOM` starts the game with `?code=ROOM`; fragments
+   are dropped.
 4. Each request under `/run/` is planned against the manifest. Missing pack
    frames are fetched with coalesced HTTP Range requests (only `206` with a
    matching `Content-Range` is accepted), decoded and verified chunk by chunk,

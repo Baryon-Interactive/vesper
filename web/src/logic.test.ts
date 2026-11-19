@@ -59,6 +59,9 @@ test("play frame messages are reduced to plain values", async () => {
   expect(playEvent({ type: "other" })).toBeNull();
   expect(playEvent("vesper-started")).toBeNull();
   expect(playUrl("https://play.example", "a b")).toBe("https://play.example/launch.html?app=a+b&channel=stable");
+  expect(playUrl("https://play.example", "game", "stable", "?code=AB12&app=evil&channel=beta&name=a%20b&code=2")).toBe(
+    "https://play.example/launch.html?app=game&channel=stable&code=AB12&name=a+b&code=2",
+  );
 });
 
 test("listing helpers: release line, gallery order, labels, changelog language", () => {

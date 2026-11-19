@@ -1,4 +1,8 @@
-// Vesper play site launch page: /launch.html?app=<app_id>&channel=<channel>
+// Vesper play site launch page: /launch.html?app=<app_id>&channel=<channel>[&<game params>]
+//
+// Query keys other than `app` and `channel` belong to the game: they are passed
+// on, URL-encoded, in the query of the game frame (for example an invite's
+// `code=ROOM`). Fragments are not forwarded.
 //
 // This page lives on the play origin, separate from the store, because games
 // are third-party code: anything under /run/ shares this origin and must never
@@ -18,6 +22,9 @@
   const params = new URLSearchParams(location.search);
   const appId = params.get("app") || "";
   const channel = params.get("channel") || "stable";
+  const gameParams = new URLSearchParams();
+  for (const [key, value] of params) if (key !== "app" && key !== "channel") gameParams.append(key, value);
+  const gameQuery = gameParams.toString();
   const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
 
   let config = {};
@@ -82,7 +89,9 @@
     frame.id = "game";
     frame.title = appId;
     frame.allow = "autoplay; fullscreen; gamepad; microphone; cross-origin-isolated";
-    frame.src = `/run/${encodeURIComponent(appId)}/${prepared.entry.split("/").map(encodeURIComponent).join("/")}`;
+    frame.src =
+      `/run/${encodeURIComponent(appId)}/${prepared.entry.split("/").map(encodeURIComponent).join("/")}` +
+      (gameQuery ? `?${gameQuery}` : "");
     frame.addEventListener("load", () => {
       status.hidden = true;
       frame.focus();
