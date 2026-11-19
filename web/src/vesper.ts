@@ -79,31 +79,20 @@ export function siteConfig(): Promise<SiteConfig> {
 
 /** Launch page query keys owned by Vesper; a game can never accept them. */
 export const RESERVED_PLAY_PARAMS = ["app", "channel"];
-/** Longest play link value passed to a game. */
-export const MAX_PLAY_PARAM_VALUE = 256;
 
 /**
  * URL of a game's launch page on the separate play origin. `gameQuery` is the
- * play page's own query string (for example an invite's `?code=ROOM`); only the
- * keys in `accepted` (the listing's `play_params`) are forwarded, with values of
- * at most 256 characters. The launch page applies the same filter from the
- * verified listing, so this only keeps other keys out of its URL. With
- * `accepted` null (the listing could not be read in time), every key that a
- * listing could name is passed on and the launch page does the filtering.
+ * play page's own query string (for example an invite's `?code=ROOM`); every
+ * key but `app` and `channel` is passed on. The launch page forwards to the
+ * game only the keys in `play_params` of the verified listing, so the store
+ * does not need the listing (or its catalogue worker) before the game starts.
  */
-export function playUrl(
-  playOrigin: string,
-  appId: string,
-  channel = "stable",
-  gameQuery = "",
-  accepted: readonly string[] | null = [],
-): string {
+export function playUrl(playOrigin: string, appId: string, channel = "stable", gameQuery = ""): string {
   const url = new URL("/launch.html", playOrigin);
   url.searchParams.set("app", appId);
   url.searchParams.set("channel", channel);
   for (const [key, value] of new URLSearchParams(gameQuery)) {
-    const allowed = accepted ? accepted.includes(key) : /^[A-Za-z0-9_-]{1,32}$/.test(key);
-    if (!RESERVED_PLAY_PARAMS.includes(key) && allowed && value.length <= MAX_PLAY_PARAM_VALUE) url.searchParams.append(key, value);
+    if (!RESERVED_PLAY_PARAMS.includes(key)) url.searchParams.append(key, value);
   }
   return url.href;
 }

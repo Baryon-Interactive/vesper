@@ -59,13 +59,9 @@ test("play frame messages are reduced to plain values", async () => {
   expect(playEvent({ type: "other" })).toBeNull();
   expect(playEvent("vesper-started")).toBeNull();
   expect(playUrl("https://play.example", "a b")).toBe("https://play.example/launch.html?app=a+b&channel=stable");
-  const invite = `?code=AB12&app=evil&channel=beta&name=a%20b&newrun=1&code=2&long=${"x".repeat(257)}`;
-  expect(playUrl("https://play.example", "game", "stable", invite)).toBe("https://play.example/launch.html?app=game&channel=stable");
-  expect(playUrl("https://play.example", "game", "stable", invite, ["code", "name", "long", "app"])).toBe(
-    "https://play.example/launch.html?app=game&channel=stable&code=AB12&name=a+b&code=2",
-  );
-  // Listing unknown: keys a listing could name pass, the launch page filters.
-  expect(playUrl("https://play.example", "game", "stable", `${invite}&a%20b=1`, null)).toBe(
+  // Everything but app and channel goes to the launch page, which applies play_params.
+  const invite = `?code=AB12&app=evil&channel=beta&name=a%20b&newrun=1&code=2`;
+  expect(playUrl("https://play.example", "game", "stable", invite)).toBe(
     "https://play.example/launch.html?app=game&channel=stable&code=AB12&name=a+b&newrun=1&code=2",
   );
 });

@@ -599,8 +599,6 @@ function Facts({ app, store, web, desktop }: { app: AppDetail; store: Store; web
   );
 }
 
-const PLAY_LISTING_WAIT_MS = 4000;
-
 function PlayPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
   const [src, setSrc] = useState("");
   const [ready, setReady] = useState<{ version: string; channel: string } | null>(null);
@@ -626,23 +624,18 @@ function PlayPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
       if (message?.type === "error") setError(message.message);
     };
     addEventListener("message", onMessage);
-    const detail = appDetail(appId).then(
+    // The title only; the launch frame never waits on the catalogue worker.
+    appDetail(appId).then(
       (a) => {
         const name = localized(a.store?.title, languages, appId);
         setTitle(name);
         document.title = `${name} · Vesper`;
-        return a;
       },
-      () => null,
+      () => {},
     );
-    // The listing only narrows the query passed to the launch page, which
-    // filters it again from the verified listing, so the game never waits on it
-    // for more than a few seconds.
-    const listing = Promise.race([detail, new Promise<undefined>((resolve) => setTimeout(resolve, PLAY_LISTING_WAIT_MS))]);
-    Promise.all([siteConfig(), listing]).then(([config, a]) => {
+    siteConfig().then((config) => {
       playOrigin = config.playOrigin;
-      const accepted = a ? (a.store?.play_params ?? []) : null;
-      setSrc(playUrl(config.playOrigin, appId, "stable", location.search, accepted));
+      setSrc(playUrl(config.playOrigin, appId, "stable", location.search));
     }, (e: Error) => setError(e.message));
     return () => removeEventListener("message", onMessage);
   }, [appId]);
