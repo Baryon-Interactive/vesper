@@ -88,7 +88,7 @@ const REQUIRED: [&str; 11] = [
     "homepage",
     "platforms",
 ];
-const OPTIONAL: [&str; 15] = [
+const OPTIONAL: [&str; 16] = [
     "default_language",
     "release",
     "features",
@@ -104,7 +104,23 @@ const OPTIONAL: [&str; 15] = [
     "content_descriptors",
     "accessibility",
     "updated",
+    "play_params",
 ];
+
+/// Most query keys one game may accept from play links (`play_params`).
+pub const MAX_PLAY_PARAMS: usize = 16;
+/// Query keys the play site keeps for itself.
+pub const RESERVED_PLAY_PARAMS: [&str; 2] = ["app", "channel"];
+
+/// A query key a web game may accept from a play link: 1 to 32 ASCII letters,
+/// digits, `_` or `-`, and not one of [`RESERVED_PLAY_PARAMS`].
+pub fn is_play_param(key: &str) -> bool {
+    (1..=32).contains(&key.len())
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && !RESERVED_PLAY_PARAMS.contains(&key)
+}
 
 /// A BCP 47 style language tag: `en`, `zh-Hans`, `pt-BR`, `es-419`.
 pub fn is_language_tag(tag: &str) -> bool {
@@ -316,6 +332,20 @@ pub fn validate(store: &Value) -> Vec<String> {
             fail(format!(
                 "links must map {} to https:// URLs",
                 LINKS.join(", ")
+            ));
+        }
+    }
+    if let Some(value) = store.get("play_params") {
+        let ok = value.as_array().is_some_and(|list| {
+            (1..=MAX_PLAY_PARAMS).contains(&list.len())
+                && list
+                    .iter()
+                    .enumerate()
+                    .all(|(i, v)| v.as_str().is_some_and(is_play_param) && !list[..i].contains(v))
+        });
+        if !ok {
+            fail(format!(
+                "play_params must list 1 to {MAX_PLAY_PARAMS} unique query keys (A-Z, a-z, 0-9, _, -; at most 32 characters; not app or channel)"
             ));
         }
     }
@@ -533,6 +563,18 @@ mod tests {
         )
         .contains("release"));
         assert!(broken("bogus", serde_json::json!(1)).contains("unknown field bogus"));
+        for bad in [
+            serde_json::json!([]),
+            serde_json::json!(["code", "code"]),
+            serde_json::json!(["app"]),
+            serde_json::json!(["a b"]),
+            serde_json::json!(["x".repeat(33)]),
+            serde_json::json!([1]),
+        ] {
+            assert!(broken("play_params", bad).contains("play_params"));
+        }
+        assert!(is_play_param("code") && is_play_param("room_id-2"));
+        assert!(!is_play_param("channel") && !is_play_param("é") && !is_play_param(""));
     }
 
     #[test]

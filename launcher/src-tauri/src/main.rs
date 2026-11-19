@@ -84,8 +84,8 @@ fn set_game_channel(install_dir: String, channel: String) -> Result<(), String> 
     launcher::set_game_channel(&install_dir, &channel).map_err(|e| e.to_string())
 }
 #[tauri::command]
-fn launch_game(install_dir: String, executable: String, args: Vec<String>) -> Result<(), String> {
-    launcher::launch_game(&install_dir, &executable, &args).map_err(|e| e.to_string())
+fn launch_game(install_dir: String, state: State<'_, AppState>) -> Result<String, String> {
+    launcher::launch_installed(&install_dir, state.inner()).map_err(|e| e.to_string())
 }
 #[tauri::command]
 fn runtime_allowlist() -> Vec<Value> {

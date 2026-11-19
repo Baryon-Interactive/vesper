@@ -31,14 +31,14 @@ pub mod tasks;
 pub use events::{EventSink, NoopEventSink};
 pub use gateway::{email_start, email_verify, fetch_grants, logout, redeem_code};
 pub use install::{
-    check_update, install_from_index, repair_from_index, repair_game, rollback_game,
-    set_game_channel, uninstall_game, verify_game, InstallRequest, UpdateCheck,
+    check_update, install_from_index, installed_launch, repair_from_index, repair_game,
+    rollback_game, set_game_channel, uninstall_game, verify_game, InstallRequest, UpdateCheck,
 };
 pub use library::list_installed;
 pub use media::verify_media;
-/// Launch a game using the platform process service.
 pub use platform::host::{host_platforms, resolve_channel};
-pub use platform::process::launch_game;
+/// Launch a game using the platform process service.
+pub use platform::process::{launch_game, launch_installed};
 pub use runtime::{runtime_allowlist, validate_runtime_rules};
 pub use settings::{get_settings, load_settings, save_settings, Settings};
 pub use state::{new_app_state, AppState};

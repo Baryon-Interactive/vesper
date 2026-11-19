@@ -21,7 +21,7 @@ use std::{
     },
 };
 use vesper_fetch::{Materializer, MultiSourceFetcher};
-use vesper_format::{CryptoContext, Manifest};
+use vesper_format::{CryptoContext, LaunchSpec, Manifest};
 use vesper_install::Installer;
 use vesper_meta::{AppTargetsSigned, Signed};
 use zeroize::Zeroize;
@@ -315,6 +315,34 @@ fn installed_manifest(root: &Path, gateway_base: &str) -> Result<Manifest> {
     }
 }
 
+/// Launch target of an installed game, read from its installed manifest.
+pub fn installed_launch(install_dir: &str, state: &AppState) -> LaunchSpec {
+    let gateway_base = state.settings.lock().unwrap().gateway_base.clone();
+    launch_spec(Path::new(install_dir), &gateway_base)
+}
+
+/// The manifest's recorded launch target. Builds packed without one use their
+/// single top-level `.exe`, and `game.exe` when the manifest names neither or
+/// cannot be read.
+fn launch_spec(root: &Path, gateway_base: &str) -> LaunchSpec {
+    let spec = |executable: String| LaunchSpec {
+        executable,
+        args: Vec::new(),
+        working_dir: None,
+    };
+    installed_manifest(root, gateway_base)
+        .ok()
+        .and_then(|manifest| {
+            manifest.install.launch.clone().or_else(|| {
+                vesper_format::default_launch_executable(
+                    manifest.files.iter().map(|file| file.path.as_str()),
+                )
+                .map(spec)
+            })
+        })
+        .unwrap_or_else(|| spec(vesper_format::DEFAULT_LAUNCH_EXECUTABLE.to_string()))
+}
+
 /// Run the same verified installation pipeline used by the UI, without window events.
 pub fn install_from_index(request: InstallRequest, state: &AppState) -> Result<()> {
     run_install(
@@ -561,4 +589,69 @@ pub fn set_game_channel(install_dir: &str, channel: &str) -> Result<()> {
     fs::create_dir_all(root.join(".vesper"))?;
     fs::write(root.join(".vesper/channel"), channel)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vesper_format::{hash_bytes, ChunkingParams, FileEntry};
+
+    fn install_manifest(files: &[&str], launch: Option<&str>) -> tempfile::TempDir {
+        let mut manifest = Manifest::new(
+            "launch.test".into(),
+            "windows-x64".into(),
+            "1.0.0".into(),
+            ChunkingParams {
+                min_size: 64,
+                avg_size: 256,
+                max_size: 1024,
+            },
+        );
+        for path in files {
+            manifest.files.push(FileEntry {
+                path: path.to_string(),
+                size: 0,
+                mode: 0o644,
+                content_hash: hash_bytes(b""),
+                chunks: Vec::new(),
+            });
+        }
+        manifest.install.launch = launch.map(|executable| LaunchSpec {
+            executable: executable.into(),
+            args: vec!["-windowed".into()],
+            working_dir: None,
+        });
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".vesper")).unwrap();
+        fs::write(
+            root.path().join(".vesper/installed-manifest.cbor.zst"),
+            manifest.encode().unwrap(),
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn launch_uses_the_recorded_executable() {
+        let root = install_manifest(
+            &["Other.exe", "NoDoorsAllowed.exe"],
+            Some("NoDoorsAllowed.exe"),
+        );
+        let launch = launch_spec(root.path(), "");
+        assert_eq!(launch.executable, "NoDoorsAllowed.exe");
+        assert_eq!(launch.args, vec!["-windowed".to_string()]);
+    }
+
+    #[test]
+    fn launch_without_record_uses_the_only_top_level_exe_then_game_exe() {
+        let root = install_manifest(&["NoDoorsAllowed.exe", "UnityCrashHandler64.exe"], None);
+        assert_eq!(
+            launch_spec(root.path(), "").executable,
+            "NoDoorsAllowed.exe"
+        );
+        let root = install_manifest(&["a.exe", "b.exe"], None);
+        assert_eq!(launch_spec(root.path(), "").executable, "game.exe");
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(launch_spec(empty.path(), "").executable, "game.exe");
+    }
 }

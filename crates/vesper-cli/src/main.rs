@@ -138,6 +138,10 @@ enum Command {
         /// Path globs preserved during update/repair, e.g. Saved/** or *.ini.
         #[arg(long = "user-file")]
         user_files: Vec<String>,
+        /// Executable the client starts, relative to the build root. Defaults to the
+        /// single top-level .exe other than UnityCrashHandler*.exe.
+        #[arg(long)]
+        launch: Option<String>,
         #[arg(long)]
         depot_key_hex: Option<String>,
         #[arg(long, default_value_t = 1)]
@@ -494,6 +498,7 @@ fn run_command(command: Command) -> Result<()> {
             previous,
             release_tag,
             user_files,
+            launch,
             depot_key_hex,
             key_id,
         } => {
@@ -548,6 +553,7 @@ fn run_command(command: Command) -> Result<()> {
                 }
             }
             result.manifest.install.user_files = user_files;
+            result.manifest.install.launch = pack_launch(&result.manifest, launch)?;
             let manifest_bytes = if let Some(crypto) = manifest_crypto.as_ref() {
                 result.manifest.encode_with_crypto(crypto)?
             } else {
@@ -555,11 +561,17 @@ fn run_command(command: Command) -> Result<()> {
             };
             fs::write(&result.manifest_path, manifest_bytes)?;
             println!(
-                "manifest={} files={} chunks={} packs={}",
+                "manifest={} files={} chunks={} packs={} launch={}",
                 result.manifest_path.display(),
                 result.manifest.files.len(),
                 result.manifest.chunks.len(),
-                result.manifest.packs.len()
+                result.manifest.packs.len(),
+                result
+                    .manifest
+                    .install
+                    .launch
+                    .as_ref()
+                    .map_or("none", |launch| launch.executable.as_str())
             );
         }
         Command::Check {
@@ -1083,6 +1095,36 @@ fn diff_check(
         println!("changed path={path}");
     }
     Ok(())
+}
+
+/// Launch target for a packed build: the `--launch` path, which must be a packed
+/// file, or else the default chosen from the build's top-level executables.
+fn pack_launch(
+    manifest: &Manifest,
+    launch: Option<String>,
+) -> Result<Option<vesper_format::LaunchSpec>> {
+    let executable = match launch {
+        Some(path) => {
+            let path = path.replace('\\', "/");
+            let path = path.trim_start_matches("./").to_string();
+            vesper_format::validate_relative_path(&path)?;
+            if !manifest.files.iter().any(|file| file.path == path) {
+                anyhow::bail!("--launch {path} is not a file in the packed build");
+            }
+            path
+        }
+        None => match vesper_format::default_launch_executable(
+            manifest.files.iter().map(|file| file.path.as_str()),
+        ) {
+            Some(path) => path,
+            None => return Ok(None),
+        },
+    };
+    Ok(Some(vesper_format::LaunchSpec {
+        executable,
+        args: Vec::new(),
+        working_dir: None,
+    }))
 }
 
 fn load_manifest(path: &PathBuf) -> Result<Manifest> {

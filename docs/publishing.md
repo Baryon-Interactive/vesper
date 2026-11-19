@@ -68,6 +68,7 @@ Required: `title` and `summary` (maps from language tag to text), `tags`,
 | `content_descriptors` | `violence`, `blood`, `gore`, `strong-language`, `sexual-content`, `nudity`, `drugs`, `alcohol`, `gambling`, `horror`. |
 | `accessibility` | `subtitles`, `colorblind-modes`, `remappable-controls`, `adjustable-text-size`, `screen-reader`, `one-handed`, `difficulty-options`, `reduced-motion`, `no-flashing-lights`. |
 | `default_language`, `updated` | The listing's main language tag and the date it last changed. |
+| `play_params` | Query keys your web build accepts from play links, for example `["code"]` so `/play/<app_id>?code=ROOM` starts the game with `?code=ROOM`. 1 to 16 unique keys of letters, digits, `_` or `-` (at most 32 characters), not `app` or `channel`. The play site forwards only these keys, and drops values longer than 256 characters; without the field it forwards nothing. |
 
 Unknown fields are rejected, so a typo fails `vesper store check` instead of
 silently disappearing. `requirements` (free-form name to text) stays for older

@@ -68,11 +68,32 @@ export function siteConfig(): Promise<SiteConfig> {
   return configPromise;
 }
 
-/** URL of the launch page on the separate play origin. */
-export function playUrl(playOrigin: string, appId: string, channel = "stable"): string {
+/** Launch page query keys owned by Vesper; a game can never accept them. */
+export const RESERVED_PLAY_PARAMS = ["app", "channel"];
+/** Longest play link value passed to a game. */
+export const MAX_PLAY_PARAM_VALUE = 256;
+
+/**
+ * URL of a game's launch page on the separate play origin. `gameQuery` is the
+ * play page's own query string (for example an invite's `?code=ROOM`); only the
+ * keys in `accepted` (the listing's `play_params`) are forwarded, with values of
+ * at most 256 characters. The launch page applies the same filter from the
+ * verified listing, so this only keeps other keys out of its URL.
+ */
+export function playUrl(
+  playOrigin: string,
+  appId: string,
+  channel = "stable",
+  gameQuery = "",
+  accepted: readonly string[] = [],
+): string {
   const url = new URL("/launch.html", playOrigin);
   url.searchParams.set("app", appId);
   url.searchParams.set("channel", channel);
+  for (const [key, value] of new URLSearchParams(gameQuery)) {
+    if (!RESERVED_PLAY_PARAMS.includes(key) && accepted.includes(key) && value.length <= MAX_PLAY_PARAM_VALUE)
+      url.searchParams.append(key, value);
+  }
   return url.href;
 }
 

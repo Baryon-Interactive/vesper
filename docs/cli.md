@@ -13,7 +13,7 @@ and have no previous-format compatibility.
 | `init` | Write `vesper.toml` and store a developer key. `--output`, `--app-id`, optional `--index` to print route-registration instructions |
 | `check` | Inspect an unpacked directory: positional build or `--input`, `--max-file-size` (default 4 GiB), `--json` |
 | `diff-check` | Compare manifests: positional current manifest or `--current`, required `--against`, optional decryption flags, `--json` |
-| `pack` | Required `--input`, `--output`, `--app-id`, `--platform`, `--version`; repeatable `--previous` and `--user-file`; `--release-tag`, `--max-pack-size`, chunk-size and encryption flags |
+| `pack` | Required `--input`, `--output`, `--app-id`, `--platform`, `--version`; repeatable `--previous` and `--user-file`; `--launch`, `--release-tag`, `--max-pack-size`, chunk-size and encryption flags |
 | `inspect` | Print identity and counts from `--manifest`, with decryption flags when needed |
 
 ```powershell
@@ -22,6 +22,13 @@ vesper pack --input ./build --output ./dist-v1 --app-id demo --platform windows-
 vesper pack --input ./build-v2 --output ./dist-v2 --app-id demo --platform windows-x64 --version 1.1.0 --release-tag v1.1.0 --previous ./dist-v1/manifest.cbor.zst --user-file 'Saved/**'
 vesper diff-check --current ./dist-v2/manifest.cbor.zst --against ./dist-v1/manifest.cbor.zst --json
 ```
+
+`--launch <path>` records the executable the client starts, relative to the
+build root; it must be a packed file. Without it, `pack` records the single
+top-level `.exe` other than `UnityCrashHandler*.exe`, and records nothing when
+there is no such file or more than one. The output line shows the result as
+`launch=<path>` or `launch=none`. The client starts `game.exe` for builds without
+a launch target.
 
 Previous arguments accept manifest files or packed directories and may repeat.
 Keep earlier release packs accessible. Default pack size is 512 MiB. Chunking

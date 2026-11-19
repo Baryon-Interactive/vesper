@@ -624,14 +624,18 @@ function PlayPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
       if (message?.type === "error") setError(message.message);
     };
     addEventListener("message", onMessage);
-    appDetail(appId).then((a) => {
-      const name = localized(a.store?.title, languages, appId);
-      setTitle(name);
-      document.title = `${name} · Vesper`;
-    }, () => {});
-    siteConfig().then((config) => {
+    const detail = appDetail(appId).then(
+      (a) => {
+        const name = localized(a.store?.title, languages, appId);
+        setTitle(name);
+        document.title = `${name} · Vesper`;
+        return a;
+      },
+      () => null,
+    );
+    Promise.all([siteConfig(), detail]).then(([config, a]) => {
       playOrigin = config.playOrigin;
-      setSrc(playUrl(config.playOrigin, appId));
+      setSrc(playUrl(config.playOrigin, appId, "stable", location.search, a?.store?.play_params ?? []));
     }, (e: Error) => setError(e.message));
     return () => removeEventListener("message", onMessage);
   }, [appId]);

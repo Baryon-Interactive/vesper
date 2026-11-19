@@ -112,7 +112,9 @@ errors report Windows Restart Manager owners without forcibly terminating them.
 The client installs the channel build for the player's own platform
 (`<channel>-<platform>` first, then the plain channel if its platform matches; see
 [publishing](../docs/publishing.md)). On macOS and Linux it restores execute
-bits for packed executables and the launch target.
+bits for packed executables and the launch target. Play starts the launch
+executable recorded in the installed manifest (`vesper pack --launch`); for
+builds without one it starts the single top-level `.exe`, then `game.exe`.
 
 Paid installation IPC carries app/channel/metadata/install path only. The client
 library reads the session from `Vesper.Launcher.Session` (Windows Credential

@@ -275,8 +275,42 @@ impl Manifest {
                 }
             }
         }
+        if let Some(launch) = &self.install.launch {
+            validate_relative_path(&launch.executable)?;
+            if !self.files.iter().any(|file| file.path == launch.executable) {
+                anyhow::bail!(
+                    "launch executable {} is not a file in the manifest",
+                    launch.executable
+                );
+            }
+            if let Some(dir) = &launch.working_dir {
+                validate_relative_path(dir)?;
+            }
+        }
         Ok(())
     }
+}
+
+/// Executable started for a build whose manifest records no launch target.
+pub const DEFAULT_LAUNCH_EXECUTABLE: &str = "game.exe";
+
+/// The launch target to record when the publisher names none: the single
+/// top-level `.exe`, ignoring Unity's crash handler. `None` when there is no
+/// such file or more than one.
+pub fn default_launch_executable<'a>(paths: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let mut found = None;
+    for path in paths {
+        let lower = path.to_ascii_lowercase();
+        if path.contains('/') || !lower.ends_with(".exe") || lower.starts_with("unitycrashhandler")
+        {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(path.to_string());
+    }
+    found
 }
 
 fn encode_manifest_payload(manifest: &Manifest) -> Result<Vec<u8>> {
@@ -1448,6 +1482,68 @@ echo game
         let decoded = Manifest::decode_with_crypto(&encoded, &crypto).unwrap();
         assert_eq!(decoded.app_id, manifest.app_id);
         assert_eq!(decoded.version, manifest.version);
+    }
+
+    #[test]
+    fn default_launch_is_the_only_top_level_exe() {
+        assert_eq!(
+            default_launch_executable([
+                "NoDoorsAllowed.exe",
+                "UnityCrashHandler64.exe",
+                "UnityPlayer.dll",
+                "NoDoorsAllowed_Data/Plugins/x86_64/steam_api64.dll",
+                "tools/helper.exe",
+            ]),
+            Some("NoDoorsAllowed.exe".to_string())
+        );
+        assert_eq!(
+            default_launch_executable(["Game.EXE"]),
+            Some("Game.EXE".to_string())
+        );
+        assert_eq!(default_launch_executable(["a.exe", "b.exe"]), None);
+        assert_eq!(default_launch_executable(["UnityCrashHandler64.exe"]), None);
+        assert_eq!(
+            default_launch_executable(["index.html", "bin/game.exe"]),
+            None
+        );
+    }
+
+    #[test]
+    fn manifest_launch_must_name_a_packed_file() {
+        let mut manifest = Manifest::new(
+            "launch.test".into(),
+            "windows-x64".into(),
+            "1.0.0".into(),
+            ChunkingParams {
+                min_size: 64,
+                avg_size: 256,
+                max_size: 1024,
+            },
+        );
+        manifest.files.push(FileEntry {
+            path: "NoDoorsAllowed.exe".into(),
+            size: 0,
+            mode: 0o644,
+            content_hash: hash_bytes(b""),
+            chunks: Vec::new(),
+        });
+        let launch = |executable: &str, working_dir: Option<&str>| LaunchSpec {
+            executable: executable.into(),
+            args: Vec::new(),
+            working_dir: working_dir.map(str::to_string),
+        };
+        manifest.install.launch = Some(launch("NoDoorsAllowed.exe", None));
+        let decoded = Manifest::decode(&manifest.encode().unwrap()).unwrap();
+        assert_eq!(
+            decoded.install.launch.unwrap().executable,
+            "NoDoorsAllowed.exe"
+        );
+        manifest.install.launch = Some(launch("game.exe", None));
+        assert!(manifest.validate().is_err());
+        manifest.install.launch = Some(launch("../NoDoorsAllowed.exe", None));
+        assert!(manifest.validate().is_err());
+        manifest.install.launch = Some(launch("NoDoorsAllowed.exe", Some("../..")));
+        assert!(manifest.validate().is_err());
     }
 
     #[test]
