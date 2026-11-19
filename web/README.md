@@ -18,12 +18,14 @@ version is two static sites:
 - The **store** (`src/`, `public/`) shows the catalogue and runs no game code
   and no service worker.
 - The **play site** (`play/`, plus the shared runtime from `public/vesper/`)
-  holds the service worker, the chunk cache and the launch page. Every game
-  runs here, inside a frame the store embeds.
+  holds the service worker, the chunk cache and the launch page. Games run
+  here, inside a frame the store embeds. With a `playOrigin` template such
+  as `https://{app}.games.example`, every game gets its own origin, so games
+  cannot read each other's saves or caches ([per-game origins](#per-game-origins)).
 
-The store accepts messages only from that frame and the configured play
-origin, and treats them as untrusted status text. The play site can be
-embedded only by the configured store origins (`frame-ancestors`).
+The store accepts messages only from that frame and the game's play origin,
+and treats them as untrusted status text. The play site can be embedded only
+by the configured store origins (`frame-ancestors`).
 
 | Part | Role |
 | --- | --- |
@@ -32,6 +34,8 @@ embedded only by the configured store origins (`frame-ancestors`).
 | `src/` | Store: React store, detail and play pages |
 | `play/launch.html`, `play/launch.js` | Play site: registers the worker, opens the build, runs the game frame, reports progress to the store |
 | `play/sw.js` | Play site: serves `/run/<app_id>/<path>` from verified chunks |
+| `play/origins.js` | Play site: the per-game origin rule, shared by the launch page, worker and save bridge |
+| `play/saves.js`, `play/migrate.html`, `play/migrate.js` | Play site: moves Unity saves from the old shared play origin to a game's own origin |
 | `public/brand/` | Vesper mark (SVG), app icons and share image; the name and logo are excluded from the license, see [NOTICE](../NOTICE) |
 
 1. The site ships a trust anchor (`public/vesper/root.json`, copied from the
@@ -58,8 +62,8 @@ embedded only by the configured store origins (`frame-ancestors`).
 4. Each request under `/run/` is planned against the manifest. Missing pack
    frames are fetched with coalesced HTTP Range requests (only `206` with a
    matching `Content-Range` is accepted), decoded and verified chunk by chunk,
-   then cached by chunk id. All games share the play origin's Cache Storage,
-   so a cached chunk is used only if it still hashes to its id; anything
+   then cached by chunk id. A cached chunk is used only if it still hashes
+   to its id (a game shares Cache Storage with its own play origin); anything
    else is discarded and downloaded again. Range requests from the engine get `206`
    responses. Files ending in `.br` or `.gz` are decompressed first, as a web
    server sending `Content-Encoding` would do. The engine never sees bytes
@@ -125,20 +129,51 @@ node web/dev/serve.mjs --root web/play --root web/public --port 3240
 ```
 
 `serve.mjs` serves byte ranges with CORS, as a production source must, and
-overlays several `--root` folders.
+overlays several `--root` folders. The dev configuration gives each game its
+own origin, `http://<label>.localhost:3240` (Chrome and Firefox resolve
+`*.localhost` to this machine), and treats `http://127.0.0.1:3240` as the old
+shared origin. Pass `-PlayOrigin http://127.0.0.1:3240` to `start.ps1` for one
+shared origin. Locally these hosts are different sites, so the browser
+partitions the frames' storage; on one registrable domain, as in production,
+it does not.
+
+## Per-game origins
+
+`VESPER_PLAY_ORIGIN` is either one origin or a template whose first host
+label is `{app}`. With a template, a game plays on
+`https://<label>.games.example`, where `<label>` is its application id when
+the id is already a DNS label (lowercase letters, digits and inner dashes, at
+most 63 characters, not `xn--...` or `h-` and 24 hex digits), and otherwise
+`h-` and the first 24 hex digits of the id's SHA-256. The store
+(`src/vesper.ts`) and the play site (`play/origins.js`) apply the same rule.
+The launch page and the service worker refuse any game but their origin's
+own, so a game cannot be run on another game's origin to read its storage.
+Serve the play site on every such host: a wildcard DNS record and
+certificate for `*.games.example`, and the same static files on each host.
+
+`VESPER_LEGACY_PLAY_ORIGIN` names a shared play origin used before. The play
+site keeps answering there but runs no game. The first time a game starts on
+its own origin, its launch page frames `<legacy>/migrate.html`, which reads
+that game's Unity save folder (`/idbfs/<md5 of the game URL's directory>` in
+IndexedDB `/idbfs`) and posts it only to the game's own origin. The launch
+page writes the records under the game's new folder, unless the game has
+already saved there, and remembers that it is done. Nothing on the legacy
+origin is deleted. Saves of other engines, and other storage such as
+`localStorage`, are not moved.
 
 ## Deployment
 
 ```bash
-VESPER_STORE_ORIGIN=https://store.example VESPER_PLAY_ORIGIN=https://play.example VESPER_API_BASE=https://baryon-interactive.github.io/vesper-index/ VESPER_GITHUB_PROXY=https://gh.example npm --prefix web run build
+VESPER_STORE_ORIGIN=https://store.example VESPER_PLAY_ORIGIN='https://{app}.games.example' VESPER_API_BASE=https://baryon-interactive.github.io/vesper-index/ VESPER_GITHUB_PROXY=https://gh.example npm --prefix web run build
 ```
 
 This writes two static sites, `web/dist/store` and `web/dist/play`. Each
 gets its own `vesper-config.json` and a Cloudflare Pages `_headers` file. The
 store's Content Security Policy allows only its own scripts and WebAssembly,
-the catalogue and https media, and frames from the play origin. The play
-site allows framing only by the store, and its own pages (`launch.html`,
-`index.html`) run only its scripts. Both policies also allow the Cloudflare
+the catalogue and https media, and frames from the play origins. The play
+site's pages (`launch.html`, `index.html`) allow framing only by the store
+and run only its scripts; the save bridge (`migrate.html`) may be framed only
+by a game's launch page inside the store. Both policies also allow the Cloudflare
 Web Analytics beacon (`static.cloudflareinsights.com`, reporting to
 `cloudflareinsights.com`) that Cloudflare injects into the HTML it serves.
 Games under `/run/` are served by the service worker, so the host never
@@ -163,10 +198,9 @@ applies the `/*` and `/prefix/*` rules from `_headers`.
   delivery to the browser is not designed yet.
 - Cross-origin isolation uses `credentialless`, which Safari does not
   support yet: threaded builds need a single-threaded fallback there.
-- Games share one play origin, so they share its storage (saves, Cache
-  Storage). Verified chunks cannot be poisoned, but one game can read or clear
-  another's saves, or clear the rollback records. A per-game origin would
-  remove this.
+- With one shared play origin (no `{app}` template), games share its
+  storage: one game can read or clear another's saves, or clear the rollback
+  records. Use per-game origins in production.
 - No synchronous file access for engines that read with `fread`
   (Emscripten/WASI bridging). Engines must load files with `fetch` or XHR.
 - The chunk cache uses Cache Storage, with no quota management or eviction.

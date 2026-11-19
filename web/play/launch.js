@@ -12,6 +12,10 @@
 // reports progress to the embedding store with postMessage, and only to a
 // store origin listed in this site's configuration.
 //
+// With per-game play origins (play/origins.js) the page runs only the game
+// whose origin it is on, and on a game's first start it brings that game's
+// Unity saves over from the old shared origin (bringSaves below).
+//
 // The page never waits forever on the worker. The worker that gets the
 // prepare request can be replaced before it answers (a new sw.js activates and
 // claims the page), so the request is sent again to each newly activated
@@ -20,7 +24,50 @@
 "use strict";
 const PREPARE_TIMEOUT_MS = 45000;
 const READY_TIMEOUT_MS = 30000;
+const SAVES_TIMEOUT_MS = 8000;
 const RELOAD_HINT = "Reload the page to try again.";
+
+/**
+ * Copy the game's Unity saves from the old shared play origin, once. The
+ * bridge page there posts them only to this game's own origin. A failed or
+ * silent bridge is asked again on the next start; saves already made on this
+ * origin are never replaced (play/saves.js).
+ */
+async function bringSaves(config, appId, entry) {
+  if (!config.legacyOrigin || !VesperOrigins.perGame(config.playOrigin)) return;
+  const legacy = new URL(config.legacyOrigin).origin;
+  const done = `vesper-saves-moved:${appId}`;
+  if (legacy === location.origin || localStorage.getItem(done)) return;
+  const records = await new Promise((resolve) => {
+    const bridge = document.createElement("iframe");
+    let timer = 0;
+    const finish = (value) => {
+      clearTimeout(timer);
+      removeEventListener("message", onMessage);
+      bridge.remove();
+      resolve(value);
+    };
+    const onMessage = (event) => {
+      const data = event.data || {};
+      if (event.origin !== legacy || event.source !== bridge.contentWindow || data.type !== "vesper-saves" || data.appId !== appId) return;
+      finish(Array.isArray(data.records) ? data.records : null);
+    };
+    addEventListener("message", onMessage);
+    timer = setTimeout(() => finish(null), SAVES_TIMEOUT_MS);
+    bridge.hidden = true;
+    bridge.src = `${legacy}/migrate.html?${new URLSearchParams({ app: appId, entry })}`;
+    document.body.appendChild(bridge);
+  });
+  if (!records) return;
+  try {
+    const moved = await VesperSaves.write(VesperSaves.unityFolder(location.origin, appId, entry), records);
+    if (moved) console.info(`vesper: moved ${moved} saved files for ${appId} to this origin`);
+    localStorage.setItem(done, "1");
+  } catch (error) {
+    console.warn("vesper: could not move the old saves", error);
+  }
+}
+
 (async () => {
   const status = document.getElementById("status");
   const show = (text, error = false) => {
@@ -32,7 +79,7 @@ const RELOAD_HINT = "Reload the page to try again.";
   const params = new URLSearchParams(location.search);
   const appId = params.get("app") || "";
   const channel = params.get("channel") || "stable";
-  const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  const local = /^(localhost|127\.0\.0\.1|\[::1\]|.+\.localhost)$/.test(location.hostname);
 
   let config = {};
   for (const name of local ? ["/vesper-config.dev.json", "/vesper-config.json"] : ["/vesper-config.json"]) {
@@ -51,6 +98,11 @@ const RELOAD_HINT = "Reload the page to try again.";
   if (!/^[A-Za-z0-9._-]+$/.test(appId) || appId === "." || appId === "..") {
     show("No game selected.", true);
     return report({ type: "vesper-error", message: "invalid application id" });
+  }
+  // With per-game play origins, this origin runs only its own game.
+  if (config.playOrigin && !(await VesperOrigins.mayRun(config.playOrigin, appId, location.origin))) {
+    show("This game does not play on this address.", true);
+    return report({ type: "vesper-error", message: "this play origin belongs to another game" });
   }
   if (!("serviceWorker" in navigator)) {
     show("This browser cannot stream games: service workers are unavailable.", true);
@@ -141,6 +193,7 @@ const RELOAD_HINT = "Reload the page to try again.";
       if (key !== "app" && key !== "channel" && accepted.includes(key) && value.length <= 256) gameParams.append(key, value);
     }
     const gameQuery = gameParams.toString();
+    await bringSaves(config, appId, prepared.entry);
     show("Streaming the first files…");
     frame = document.createElement("iframe");
     frame.id = "game";

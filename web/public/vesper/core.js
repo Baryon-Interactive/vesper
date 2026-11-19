@@ -32,7 +32,7 @@ self.VesperCore = (() => {
   };
   const enc = new TextEncoder();
   const dec = new TextDecoder();
-  const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(self.location.hostname);
+  const local = /^(localhost|127\.0\.0\.1|\[::1\]|.+\.localhost)$/.test(self.location.hostname);
 
   /** Site configuration: catalogue base URL and the trust anchor shipped with the site. */
   function config() {

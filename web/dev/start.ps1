@@ -14,7 +14,10 @@ param(
   [string]$GameTags = 'demo',
   [string]$GameWeb = '',
   [string]$GameWindows = '',
-  [string]$GameCover = ''
+  [string]$GameCover = '',
+  # Each game plays on its own origin; '{app}' becomes the game's label.
+  # Pass 'http://127.0.0.1:3240' for one shared play origin.
+  [string]$PlayOrigin = 'http://{app}.localhost:3240'
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -137,9 +140,12 @@ foreach ($r in $releases) {
 }
 # Point the local web app at this catalogue. Only localhost pages read the dev config.
 Copy-Item (Join-Path $out 'root.json') (Join-Path $web 'public/vesper/dev-root.json') -Force
-Write-Utf8 (Join-Path $web 'public/vesper-config.dev.json') ((@{ apiBase = "http://127.0.0.1:$Port/"; trustedRoot = '/vesper/dev-root.json'; playOrigin = 'http://127.0.0.1:3240' } | ConvertTo-Json) + "`n")
-# The play site is a separate origin; only the local store may embed it.
-Write-Utf8 (Join-Path $web 'play/vesper-config.dev.json') ((@{ apiBase = "http://127.0.0.1:$Port/"; trustedRoot = '/vesper/dev-root.json'; storeOrigins = @('http://127.0.0.1:3230', 'http://localhost:3230') } | ConvertTo-Json) + "`n")
+Write-Utf8 (Join-Path $web 'public/vesper-config.dev.json') ((@{ apiBase = "http://127.0.0.1:$Port/"; trustedRoot = '/vesper/dev-root.json'; playOrigin = $PlayOrigin } | ConvertTo-Json) + "`n")
+# The play site is a separate origin; only the local store may embed it. With
+# per-game origins, 127.0.0.1:3240 stands in for the old shared play origin.
+$playConfig = @{ apiBase = "http://127.0.0.1:$Port/"; trustedRoot = '/vesper/dev-root.json'; storeOrigins = @('http://127.0.0.1:3230', 'http://localhost:3230'); playOrigin = $PlayOrigin }
+if ($PlayOrigin.Contains('{app}')) { $playConfig.legacyOrigin = 'http://127.0.0.1:3240' }
+Write-Utf8 (Join-Path $web 'play/vesper-config.dev.json') (($playConfig | ConvertTo-Json) + "`n")
 Write-Host "Catalogue output: $out"
 Write-Host "Serve it:   node web/dev/serve.mjs --root `"$out`" --port $Port"
 Write-Host "Play site:  node web/dev/serve.mjs --root web/play --root web/public --port 3240"

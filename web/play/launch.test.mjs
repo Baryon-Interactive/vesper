@@ -4,9 +4,19 @@ import { expect, test } from "vitest";
 
 const read = (name) => readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
 
+// Load play/origins.js into a stub global scope.
+function withOrigins(scope) {
+  Object.assign(scope, { crypto: globalThis.crypto, TextEncoder, URL });
+  scope.self ??= scope;
+  runInNewContext(read("origins.js"), scope);
+  scope.VesperOrigins = scope.self.VesperOrigins;
+  return scope;
+}
+
 // Run play/sw.js with a stub VesperCore whose verified listing is `store`; return
-// the worker's reply to the launch page's prepare request.
-async function prepare(store) {
+// the worker's reply to the launch page's prepare request. `site` sets the
+// worker's origin and the play site configuration.
+async function prepare(store, site = { origin: "https://play.example", config: {} }) {
   const handlers = {};
   const worker = {
     importScripts: () => {},
@@ -14,13 +24,15 @@ async function prepare(store) {
       setProgress: () => {},
       resetStats: () => {},
       openBuild: async () => ({ summary: { version: "1", files: [], launch: null }, channelName: "stable", store }),
+      config: async () => site.config,
     },
     caches: { open: async () => ({ put: async () => {}, match: async () => undefined }) },
     Response: class {},
     URL,
     console,
   };
-  worker.self = { addEventListener: (type, handler) => (handlers[type] = handler), location: { origin: "https://play.example" } };
+  worker.self = { addEventListener: (type, handler) => (handlers[type] = handler), location: { origin: site.origin } };
+  withOrigins(worker);
   runInNewContext(read("sw.js"), worker);
   let reply;
   let work;
@@ -36,7 +48,7 @@ async function prepare(store) {
 // Run play/launch.js against a stub page. `workers` are the stub service
 // workers, each `(message, answer) => void`; the first is active. Timers only
 // run when the test fires them. Returns the page so a test can drive it.
-function launchPage(search, workers) {
+function launchPage(search, workers, site = { origin: "https://play.example", config: {} }) {
   const listeners = { message: [], controllerchange: [] };
   const timers = [];
   const page = { frame: null, status: {}, sent: [], timers };
@@ -61,7 +73,7 @@ function launchPage(search, workers) {
     timers[index].fn();
   };
   const context = {
-    location: { search, hostname: "play.example" },
+    location: { search, hostname: new URL(site.origin).hostname, origin: site.origin },
     document: {
       referrer: "",
       getElementById: () => page.status,
@@ -80,13 +92,14 @@ function launchPage(search, workers) {
         },
       },
     },
-    fetch: async () => ({ ok: true, json: async () => ({}) }),
+    fetch: async () => ({ ok: true, json: async () => site.config }),
     URLSearchParams,
     setTimeout: (fn, ms) => timers.push({ fn, ms }),
     clearTimeout: (id) => id && timers[id - 1] && (timers[id - 1].cleared = true),
     console,
   };
   context.window = context;
+  withOrigins(context);
   runInNewContext(read("launch.js"), context);
   return page;
 }
@@ -156,4 +169,24 @@ test("an answer to the first request still counts after a retry", async () => {
   first();
   await settle();
   expect(page.frame?.src).toBe("/run/no-doors-allowed/index.html");
+});
+
+const perGame = { playOrigin: "https://{app}.play.example" };
+
+test("with per-game origins the worker opens only its own game", async () => {
+  const own = await prepare({}, { origin: "https://no-doors-allowed.play.example", config: perGame });
+  expect(own).toMatchObject({ type: "vesper-ready" });
+  const other = await prepare({}, { origin: "https://ember-drift.play.example", config: perGame });
+  expect(other).toMatchObject({ type: "vesper-error", message: "this play origin belongs to another game" });
+  const legacy = await prepare({}, { origin: "https://play.example", config: { ...perGame, legacyOrigin: "https://play.example" } });
+  expect(legacy.type).toBe("vesper-error");
+});
+
+test("with per-game origins the launch page refuses another game", async () => {
+  const ready = await prepare({});
+  const page = launchPage("?app=no-doors-allowed", [answers(ready)], { origin: "https://ember-drift.play.example", config: perGame });
+  for (let i = 0; i < 20; i++) await settle();
+  expect(page.sent).toHaveLength(0);
+  expect(page.frame).toBeNull();
+  expect(page.status).toMatchObject({ className: "error", textContent: "This game does not play on this address." });
 });
