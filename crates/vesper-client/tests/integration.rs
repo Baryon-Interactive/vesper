@@ -1396,3 +1396,53 @@ fn catalogue_rejects_tampered_raw_store_without_displaying_derived_records() {
         server.json(&format!("/apps/test.catalogue/{name}"), &json!({}));
     }
 }
+
+#[test]
+fn launch_installed_starts_the_manifest_launch_executable() {
+    use std::time::{Duration, Instant};
+    let temp = tempdir().unwrap();
+    let input = temp.path().join("input");
+    let output = temp.path().join("build");
+    let target = temp.path().join("library/demo.launch");
+    fs::create_dir_all(&input).unwrap();
+    // A stand-in game that creates `launched` in its working directory.
+    #[cfg(windows)]
+    let args = {
+        let system = std::env::var_os("SystemRoot").unwrap();
+        fs::copy(
+            Path::new(&system).join("System32/cmd.exe"),
+            input.join("NoDoorsAllowed.exe"),
+        )
+        .unwrap();
+        vec!["/c".to_string(), "mkdir".into(), "launched".into()]
+    };
+    #[cfg(not(windows))]
+    let args = {
+        fs::write(
+            input.join("NoDoorsAllowed.exe"),
+            b"#!/bin/sh\nmkdir launched\n",
+        )
+        .unwrap();
+        Vec::new()
+    };
+    fs::write(input.join("UnityCrashHandler64.exe"), b"crash handler").unwrap();
+    let mut built = build(&input, &output, "demo.launch", "1");
+    let executable = vesper_format::default_launch_executable(
+        built.manifest.files.iter().map(|file| file.path.as_str()),
+    )
+    .unwrap();
+    built.manifest.install.launch = Some(vesper_format::LaunchSpec {
+        executable,
+        args,
+        working_dir: None,
+    });
+    install(&built.manifest, &output, &target);
+    let started =
+        vesper_client::launch_installed(target.to_str().unwrap(), &Default::default()).unwrap();
+    assert_eq!(started, "NoDoorsAllowed.exe");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !target.join("launched").is_dir() {
+        assert!(Instant::now() < deadline, "launched game did not run");
+        thread::sleep(Duration::from_millis(50));
+    }
+}
