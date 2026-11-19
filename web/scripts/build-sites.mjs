@@ -49,6 +49,12 @@ const common = ["X-Content-Type-Options: nosniff", "Referrer-Policy: strict-orig
 // Only /play/* is isolated on the store: YouTube trailers do not load inside an
 // isolated page, so the store enters and leaves the play page with a full load.
 const isolation = ["Cross-Origin-Opener-Policy: same-origin", "Cross-Origin-Embedder-Policy: credentialless"];
+// Cloudflare Web Analytics: the host injects this beacon script into the HTML
+// pages it serves, and the beacon reports to the second origin. Games under the
+// play site's /run/ are served by the service worker, so the host never sees or
+// injects into them.
+const analyticsScript = "https://static.cloudflareinsights.com";
+const analyticsReport = "https://cloudflareinsights.com";
 
 // Store: drop local-only files, write its config and a strict CSP.
 for (const file of ["vesper-config.dev.json", "vesper/dev-root.json"]) rmSync(join(store, file), { force: true });
@@ -60,10 +66,13 @@ writeFileSync(
   join(store, "_headers"),
   headers({
     "/*": [
-      `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https://i.ytimg.com; media-src https:; connect-src 'self' ${new URL(apiBase).origin} https:; worker-src 'self'; frame-src ${playOrigin} https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`,
+      `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' ${analyticsScript}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https://i.ytimg.com; media-src https:; connect-src 'self' ${new URL(apiBase).origin} ${analyticsReport} https:; worker-src 'self'; frame-src ${playOrigin} https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`,
       ...common,
     ],
     "/play/*": isolation,
+    // Workers started by the isolated /play/ page must opt in as well, or the
+    // browser may refuse to start them (the catalogue worker reads the listing).
+    "/vesper/*": ["Cross-Origin-Embedder-Policy: credentialless"],
   }),
 );
 
@@ -79,6 +88,12 @@ writeFileSync(join(play, "vesper-config.json"), json({ apiBase, trustedRoot: "/v
 writeFileSync(join(play, "index.html"), `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${storeOrigin}/"><a href="${storeOrigin}/">Vesper</a>\n`);
 // Hosts that map "/" to index.html use the page above; others follow this rule.
 writeFileSync(join(play, "_redirects"), `/ ${storeOrigin}/ 302\n`);
+// The play site's own pages run only its scripts and the analytics beacon.
+// The policy is not set on "/*": game files come from the same origin and
+// bring their own scripts, and a page's policy does not reach its frames.
+const playPage = [
+  `Content-Security-Policy: default-src 'self'; script-src 'self' ${analyticsScript}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ${analyticsReport}; frame-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'`,
+];
 writeFileSync(
   join(play, "_headers"),
   headers({
@@ -86,6 +101,9 @@ writeFileSync(
     // beyond what the store's iframe delegates.
     // CORP lets the isolated store page embed the launch page.
     "/*": [`Content-Security-Policy: frame-ancestors ${storeOrigin}`, ...isolation, "Cross-Origin-Resource-Policy: cross-origin", ...common],
+    // A second Content-Security-Policy header adds a policy; both apply.
+    "/launch.html": playPage,
+    "/index.html": playPage,
     "/sw.js": ["Cache-Control: no-cache"],
   }),
 );
