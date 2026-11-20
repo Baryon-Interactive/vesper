@@ -27,7 +27,7 @@ import {
   type Trailer,
 } from "./logic";
 import { Markdown } from "./Markdown";
-import { appDetail, listApps, playEvent, playUrl, siteConfig, verifiedMedia, type Progress } from "./vesper";
+import { appDetail, listApps, playEvent, playOriginFor, playUrl, siteConfig, verifiedMedia, type Progress } from "./vesper";
 
 const languages = typeof navigator === "undefined" ? ["en"] : navigator.languages ?? [navigator.language];
 // Dates and language names follow the UI language, English until the UI is translated.
@@ -611,7 +611,7 @@ function PlayPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
   useEffect(() => {
     let playOrigin = "";
     const onMessage = (event: MessageEvent) => {
-      // Only the play frame we created, from the configured play origin.
+      // Only the play frame we created, from this game's play origin.
       if (!playOrigin || event.origin !== playOrigin || event.source !== frame.current?.contentWindow) return;
       const message = playEvent(event.data);
       if (message?.type === "progress") setProgress(message.progress);
@@ -633,10 +633,12 @@ function PlayPage({ appId, go }: { appId: string; go: (r: Route) => void }) {
       },
       () => {},
     );
-    siteConfig().then((config) => {
-      playOrigin = config.playOrigin;
-      setSrc(playUrl(config.playOrigin, appId, "stable", location.search));
-    }, (e: Error) => setError(e.message));
+    siteConfig()
+      .then((config) => playOriginFor(config.playOrigin, appId))
+      .then((origin) => {
+        playOrigin = origin;
+        setSrc(playUrl(origin, appId, "stable", location.search));
+      }, (e: Error) => setError(e.message));
     return () => removeEventListener("message", onMessage);
   }, [appId]);
   const status = error

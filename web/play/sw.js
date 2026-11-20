@@ -9,7 +9,7 @@
 // ordinary static web server, including 206 responses to Range requests.
 /* global VesperCore */
 "use strict";
-importScripts("/vesper/pkg/vesper_web.js", "/vesper/core.js");
+importScripts("/vesper/pkg/vesper_web.js", "/vesper/core.js", "/origins.js");
 
 const builds = new Map(); // app_id -> Promise<build>
 const BUILD_KEY = "/__vesper/state/play-channel-";
@@ -55,10 +55,24 @@ async function rememberedChannel(appId) {
   return hit ? hit.text() : "stable";
 }
 
+/**
+ * With per-game play origins (play/origins.js), this worker serves only the
+ * game whose origin it runs on; any other game id is refused before anything
+ * is fetched.
+ */
+async function ownGame(appId) {
+  const config = await VesperCore.config();
+  if (!config.playOrigin || (await VesperOrigins.mayRun(config.playOrigin, appId, self.location.origin))) return;
+  throw new Error("this play origin belongs to another game");
+}
+
 /** Verify and open a web build once per worker lifetime. */
 function build(appId, channel) {
   if (!builds.has(appId)) {
-    const promise = (async () => VesperCore.openBuild(appId, channel || (await rememberedChannel(appId))))();
+    const promise = (async () => {
+      await ownGame(appId);
+      return VesperCore.openBuild(appId, channel || (await rememberedChannel(appId)));
+    })();
     builds.set(appId, promise);
     promise.catch(() => builds.delete(appId));
   }

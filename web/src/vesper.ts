@@ -55,6 +55,10 @@ export function verifiedMedia(url: string, blake3: string): Promise<string> {
 
 export type Progress = { downloaded: number; cached: number; requests: number };
 
+/**
+ * `playOrigin` is one origin for every game (`https://play.example`) or a
+ * template that gives each game its own (`https://{app}.play.example`).
+ */
 export type SiteConfig = { apiBase: string; playOrigin: string; appDownload?: string };
 let configPromise: Promise<SiteConfig> | null = null;
 
@@ -62,12 +66,13 @@ let configPromise: Promise<SiteConfig> | null = null;
 export function siteConfig(): Promise<SiteConfig> {
   if (!configPromise) {
     configPromise = (async () => {
-      const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+      const local = /^(localhost|127\.0\.0\.1|\[::1\]|.+\.localhost)$/.test(location.hostname);
       for (const name of local ? ["/vesper-config.dev.json", "/vesper-config.json"] : ["/vesper-config.json"]) {
         const response = await fetch(name, { cache: "no-store" });
         if (response.ok) {
           const value = await response.json();
-          return { ...value, playOrigin: new URL(value.playOrigin).origin };
+          const template = String(value.playOrigin).replace(/\/$/, "");
+          return { ...value, playOrigin: perGameOrigins(template) ? template : new URL(template).origin };
         }
       }
       throw new Error("vesper-config.json is missing");
@@ -75,6 +80,29 @@ export function siteConfig(): Promise<SiteConfig> {
     configPromise.catch(() => (configPromise = null));
   }
   return configPromise;
+}
+
+const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const HASHED = /^h-[0-9a-f]{24}$/;
+
+/**
+ * The DNS label of a game's play origin: the application id when it already
+ * is a label, otherwise `h-` and 24 hex digits of its SHA-256. The play site
+ * applies the same rule (play/origins.js).
+ */
+export async function playLabel(appId: string): Promise<string> {
+  if (LABEL.test(appId) && !HASHED.test(appId) && appId.slice(2, 4) !== "--") return appId;
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(appId)));
+  return "h-" + [...digest.slice(0, 12)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Whether a `playOrigin` template gives every game its own origin. */
+export const perGameOrigins = (template: string) => /^https?:\/\/\{app\}\.[^/{}]+$/.test(template);
+
+/** The origin a game plays on. */
+export async function playOriginFor(template: string, appId: string): Promise<string> {
+  if (!perGameOrigins(template)) return new URL(template).origin;
+  return new URL(template.replace("{app}", await playLabel(appId))).origin;
 }
 
 /** Launch page query keys owned by Vesper; a game can never accept them. */
@@ -104,7 +132,7 @@ export type PlayEvent =
   | { type: "error"; message: string };
 
 /**
- * Parse a message from the play frame. Games share the play origin, so these
+ * Parse a message from the play frame. Game code runs on the play origin, so these
  * messages are untrusted: they only drive the status line and are reduced to
  * plain numbers and strings here.
  */
